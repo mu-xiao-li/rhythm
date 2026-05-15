@@ -81,7 +81,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * <li>Rewards an article (/article/reward), POST</li>
  * <li>Gets an article preview content (/article/{articleId}/preview), GET</li>
  * <li>Sticks an article (/article/stick), POST</li>
- * <li>Gets an article's revisions (/article/{id}/revisions), GET</li>
+ * <li>Gets an article's revision list (/article/{id}/revisions/list), GET</li>
+ * <li>Gets an article revision (/article/{id}/revisions/{revisionId}), GET</li>
  * <li>Gets article image (/article/{articleId}/image), GET</li>
  * <li>Checks article title (/article/check-title), POST</li>
  * <li>Removes an article (/article/{id}/remove), POST</li>
@@ -113,6 +114,12 @@ public class ArticleProcessor {
     private RevisionQueryService revisionQueryService;
 
     /**
+     * 文章历史版本查询服务。
+     */
+    @Inject
+    private ArticleRevisionQueryService articleRevisionQueryService;
+
+    /**
      * Short link query service.
      */
     @Inject
@@ -123,6 +130,12 @@ public class ArticleProcessor {
      */
     @Inject
     private ArticleMgmtService articleMgmtService;
+
+    @Inject
+    private ArticleSearchVisitStatMgmtService articleSearchVisitStatMgmtService;
+
+    @Inject
+    private ArticleSearchVisitStatQueryService articleSearchVisitStatQueryService;
 
     /**
      * Article query service.
@@ -137,10 +150,19 @@ public class ArticleProcessor {
     private LongArticleReadService longArticleReadService;
 
     /**
+     * Long article column query service.
+     */
+    @Inject
+    private LongArticleColumnQueryService longArticleColumnQueryService;
+
+    /**
      * Comment query service.
      */
     @Inject
     private CommentQueryService commentQueryService;
+
+    @Inject
+    private ReactionQueryService reactionQueryService;
 
     /**
      * User query service.
@@ -247,7 +269,8 @@ public class ArticleProcessor {
         Dispatcher.post("/article/{id}/remove", articleProcessor::removeArticle, loginCheck::handle, permissionMidware::check);
         Dispatcher.post("/article/check-title", articleProcessor::checkArticleTitle, loginCheck::handle);
         Dispatcher.get("/article/{articleId}/image", articleProcessor::getArticleImage, loginCheck::handle);
-        Dispatcher.get("/article/{id}/revisions", articleProcessor::getArticleRevisions, loginCheck::handle, permissionMidware::check);
+        Dispatcher.get("/article/{id}/revisions/list", articleProcessor::getArticleRevisionMetas, loginCheck::handle, permissionMidware::check);
+        Dispatcher.get("/article/{id}/revisions/{revisionId}", articleProcessor::getArticleRevision, loginCheck::handle, permissionMidware::check);
         Dispatcher.get("/pre-post", articleProcessor::showPreAddArticle, loginCheck::handle, csrfMidware::fill);
         Dispatcher.get("/post", articleProcessor::showAddArticle, loginCheck::handle, csrfMidware::fill);
         Dispatcher.get("/post/long", articleProcessor::showLongArticleAdd, loginCheck::handle, csrfMidware::fill);
@@ -256,12 +279,12 @@ public class ArticleProcessor {
         Dispatcher.get("/update", articleProcessor::showUpdateArticle, loginCheck::handle, csrfMidware::fill);
         Dispatcher.put("/article/{id}", articleProcessor::updateArticle, loginCheck::handle, permissionMidware::check, articlePostValidationMidware::handle);
         Dispatcher.post("/markdown", articleProcessor::markdown2HTML);
-        Dispatcher.get("/article/{articleId}/preview", articleProcessor::getArticlePreviewContent);
+        Dispatcher.get("/article/{articleId}/preview", articleProcessor::getArticlePreviewContent, anonymousViewCheckMidware::handle);
         Dispatcher.post("/article/reward", articleProcessor::rewardArticle, loginCheck::handle);
         Dispatcher.post("/article/thank", articleProcessor::thankArticle, loginCheck::handle, permissionMidware::check);
         Dispatcher.post("/article/stick", articleProcessor::stickArticle, loginCheck::handle, permissionMidware::check);
-        Dispatcher.get("/article/random/{size}", articleProcessor::randomArticles);
-        Dispatcher.group().middlewares(loginCheck::handle).router().get().uris(new String[]{"/api/articles/recent", "/api/articles/recent/hot", "/api/articles/recent/good", "/api/articles/recent/reply"}).handler(articleProcessor::getArticles);
+        Dispatcher.get("/article/random/{size}", articleProcessor::randomArticles, anonymousViewCheckMidware::handle);
+        Dispatcher.group().middlewares(loginCheck::handle).router().get().uris(new String[]{"/api/articles/recent", "/api/articles/recent/hot", "/api/articles/recent/good", "/api/articles/recent/reply", "/api/articles/recent/long"}).handler(articleProcessor::getArticles);
         Dispatcher.group().middlewares(loginCheck::handle).router().get().uris(new String[]{"/api/articles/tag/{tagURI}", "/api/articles/tag/{tagURI}/hot", "/api/articles/tag/{tagURI}/good", "/api/articles/tag/{tagURI}/reply", "/api/articles/tag/{tagURI}/perfect"}).handler(articleProcessor::getTagArticles);
         Dispatcher.get("/api/articles/domain/{domainURI}", articleProcessor::getDomainArticles, loginCheck::handle);
         Dispatcher.get("/api/article/{id}", articleProcessor::showArticleApi, loginCheck::handle);
@@ -418,6 +441,9 @@ public class ArticleProcessor {
             }
         }
 
+        reactionQueryService.fillCommentReactions(niceComments, currentUserId);
+        reactionQueryService.fillCommentReactions(articleComments, currentUserId);
+
         context.renderData(result).renderCode(StatusCodes.SUCC).renderMsg("");
     }
 
@@ -518,13 +544,20 @@ public class ArticleProcessor {
         article.put(Common.REWARDED, false);
         article.put(Common.REWARED_COUNT, rewardQueryService.rewardedCount(articleId, Reward.TYPE_C_ARTICLE));
         article.put(Article.ARTICLE_REVISION_COUNT, revisionQueryService.count(articleId, Revision.DATA_TYPE_C_ARTICLE));
-
         articleQueryService.processArticleContent(article);
 
         if (Article.ARTICLE_TYPE_C_LONG == article.optInt(Article.ARTICLE_TYPE)) {
             final JSONObject readStat = longArticleReadService.getStat(articleId);
             article.put("longArticleReadStat", readStat);
             dataModel.put("longArticleReadStat", readStat);
+
+            final JSONObject columnView = longArticleColumnQueryService.getArticleColumnView(articleId);
+            if (null != columnView) {
+                dataModel.put("longArticleColumn", columnView.optJSONObject("column"));
+                dataModel.put("longArticleChapters", columnView.opt("chapters"));
+                article.put("longArticleChapterNo", columnView.optInt(LongArticleColumn.CHAPTER_NO));
+                dataModel.put("longArticleColumnView", columnView);
+            }
         }
 
         final int cmtViewMode = 0;
@@ -554,7 +587,10 @@ public class ArticleProcessor {
         livenessMgmtService.incLiveness(currentUserId, Liveness.LIVENESS_PV);
 
 
-        if (!Sessions.isBot()) {
+        if (Sessions.isBot()) {
+            articleSearchVisitStatMgmtService.recordCrawler(articleId, Requests.getRemoteAddr(request),
+                    Headers.getHeader(request, Common.USER_AGENT, ""));
+        } else {
             final long created = System.currentTimeMillis();
             final long expired = DateUtils.addMonths(new Date(created), 1).getTime();
             final String ip = Requests.getRemoteAddr(request);
@@ -570,7 +606,9 @@ public class ArticleProcessor {
             visit.put(Visit.VISIT_UA, ua);
             visit.put(Visit.VISIT_URL, "/article/" + articleId);
             visit.put(Visit.VISIT_USER_ID, "");
-            visit.put(Visit.VISIT_USER_ID, currentUser);
+            if (null != currentUser) {
+                visit.put(Visit.VISIT_USER_ID, currentUser.optString(Keys.OBJECT_ID));
+            }
 
             articleMgmtService.incArticleViewCount(visit);
         }
@@ -623,6 +661,7 @@ public class ArticleProcessor {
         pagination.put(Pagination.PAGINATION_PAGE_NUMS, pageNums);
         dataModel.put("pagination", pagination);
 
+        reactionQueryService.fillArticleReaction(article, currentUserId);
         if (!article.optBoolean(Common.DISCUSSION_VIEWABLE)) {
             article.put(Article.ARTICLE_T_COMMENTS, (Object) Collections.emptyList());
             article.put(Article.ARTICLE_T_NICE_COMMENTS, (Object) Collections.emptyList());
@@ -712,6 +751,8 @@ public class ArticleProcessor {
         } finally {
             Stopwatchs.end();
         }
+        reactionQueryService.fillCommentReactions(niceComments, currentUserId);
+        reactionQueryService.fillCommentReactions(articleComments, currentUserId);
         dataModel.put(Article.ARTICLE, DesensitizeUtil.articleDesensitize(article));
         context.renderJSON(new JSONObject().put("data", dataModel)).renderCode(StatusCodes.SUCC).renderMsg("");
     }
@@ -836,24 +877,29 @@ public class ArticleProcessor {
         pageSize = pageSize <= 0 ? Symphonys.ARTICLE_LIST_CNT : pageSize;
 
         String sortModeStr = StringUtils.substringAfter(context.requestURI(), "/recent");
-        int sortMode;
-        switch (sortModeStr) {
-            case "":
-                sortMode = 0;
-                break;
-            case "/hot":
-                sortMode = 1;
-                break;
-            case "/good":
-                sortMode = 2;
-                break;
-            case "/reply":
-                sortMode = 3;
-                break;
-            default:
-                sortMode = 0;
+        final JSONObject result;
+        if ("/long".equals(sortModeStr)) {
+            result = articleQueryService.getLongArticles(pageNum, pageSize);
+        } else {
+            int sortMode;
+            switch (sortModeStr) {
+                case "":
+                    sortMode = 0;
+                    break;
+                case "/hot":
+                    sortMode = 1;
+                    break;
+                case "/good":
+                    sortMode = 2;
+                    break;
+                case "/reply":
+                    sortMode = 3;
+                    break;
+                default:
+                    sortMode = 0;
+            }
+            result = articleQueryService.getRecentArticles(sortMode, pageNum, pageSize);
         }
-        final JSONObject result = articleQueryService.getRecentArticles(sortMode, pageNum, pageSize);
         final List<JSONObject> allArticles = (List<JSONObject>) result.get(Article.ARTICLES);
 
         final JSONObject pagination = result.getJSONObject(Pagination.PAGINATION);
@@ -1058,16 +1104,50 @@ public class ArticleProcessor {
     }
 
     /**
-     * Gets an article's revisions.
+     * 获取文章历史版本元数据。
      *
      * @param context the specified context
      */
-    public void getArticleRevisions(final RequestContext context) {
-        final String id = context.pathVar("id");
-        final List<JSONObject> revisions = revisionQueryService.getArticleRevisions(id);
+    public void getArticleRevisionMetas(final RequestContext context) {
         final JSONObject ret = new JSONObject();
-        ret.put(Keys.CODE, StatusCodes.SUCC);
-        ret.put(Revision.REVISIONS, (Object) revisions);
+        try {
+            final String id = context.pathVar("id");
+            final List<JSONObject> revisions = articleRevisionQueryService.getArticleRevisionMetas(id);
+            ret.put(Keys.CODE, StatusCodes.SUCC);
+            ret.put(Revision.REVISIONS, (Object) revisions);
+        } catch (final Exception e) {
+            LOGGER.log(Level.ERROR, "Gets article revision list failed", e);
+            ret.put(Keys.CODE, StatusCodes.ERR);
+            ret.put(Keys.MSG, e.getMessage());
+        }
+        context.renderJSON(ret);
+    }
+
+    /**
+     * 获取指定文章历史版本。
+     *
+     * @param context the specified context
+     */
+    public void getArticleRevision(final RequestContext context) {
+        final JSONObject ret = new JSONObject();
+        try {
+            final String id = context.pathVar("id");
+            final String revisionId = context.pathVar("revisionId");
+            if ("list".equals(revisionId)) {
+                final List<JSONObject> revisions = articleRevisionQueryService.getArticleRevisionMetas(id);
+                ret.put(Keys.CODE, StatusCodes.SUCC);
+                ret.put(Revision.REVISIONS, (Object) revisions);
+                context.renderJSON(ret);
+                return;
+            }
+            final JSONObject revision = articleRevisionQueryService.getArticleRevision(id, revisionId);
+            ret.put(Keys.CODE, StatusCodes.SUCC);
+            ret.put(Revision.REVISION, revision);
+        } catch (final Exception e) {
+            LOGGER.log(Level.ERROR, "Gets article revision failed", e);
+            ret.put(Keys.CODE, StatusCodes.ERR);
+            ret.put(Keys.MSG, e.getMessage());
+        }
         context.renderJSON(ret);
     }
 
@@ -1237,6 +1317,7 @@ public class ArticleProcessor {
         dataModel.put("articleContentErrorLabel", articleContentErrorLabel);
 
         fillPostArticleRequisite(dataModel, currentUser);
+        fillLongArticleColumnRequisite(dataModel, currentUser, null);
     }
 
     private void fillPostArticleRequisite(final Map<String, Object> dataModel, final JSONObject currentUser) {
@@ -1245,6 +1326,29 @@ public class ArticleProcessor {
 
         dataModel.put(Common.REQUISITE, requisite);
         dataModel.put(Common.REQUISITE_MSG, requisiteMsg);
+    }
+
+    private void fillLongArticleColumnRequisite(final Map<String, Object> dataModel, final JSONObject currentUser, final String articleId) {
+        if (null == currentUser) {
+            dataModel.put("longArticleColumns", Collections.emptyList());
+            return;
+        }
+
+        final List<JSONObject> columns = longArticleColumnQueryService.getUserColumns(currentUser.optString(Keys.OBJECT_ID), 100);
+        dataModel.put("longArticleColumns", columns);
+
+        if (StringUtils.isBlank(articleId)) {
+            return;
+        }
+
+        final JSONObject chapterMeta = longArticleColumnQueryService.getArticleChapterMeta(articleId);
+        if (null == chapterMeta) {
+            return;
+        }
+
+        dataModel.put("longArticleColumnId", chapterMeta.optString(LongArticleColumn.COLUMN_ID));
+        dataModel.put("longArticleChapterNo", chapterMeta.optInt(LongArticleColumn.CHAPTER_NO));
+        dataModel.put("longArticleColumnTitle", chapterMeta.optString(LongArticleColumn.COLUMN_TITLE));
     }
 
     /**
@@ -1305,6 +1409,9 @@ public class ArticleProcessor {
         article.put(Common.REWARDED, false);
         article.put(Common.REWARED_COUNT, rewardQueryService.rewardedCount(articleId, Reward.TYPE_C_ARTICLE));
         article.put(Article.ARTICLE_REVISION_COUNT, revisionQueryService.count(articleId, Revision.DATA_TYPE_C_ARTICLE));
+        final List<JSONObject> articleVisitSourceStats = articleSearchVisitStatQueryService.getStats(articleId);
+        article.put(ArticleSearchVisitStat.ARTICLE_VISIT_SOURCE_STATS, articleVisitSourceStats);
+        dataModel.put(ArticleSearchVisitStat.ARTICLE_VISIT_SOURCE_STATS, articleVisitSourceStats);
 
         articleQueryService.processArticleContent(article);
 
@@ -1312,6 +1419,14 @@ public class ArticleProcessor {
             final JSONObject readStat = longArticleReadService.getStat(articleId);
             article.put("longArticleReadStat", readStat);
             dataModel.put("longArticleReadStat", readStat);
+
+            final JSONObject columnView = longArticleColumnQueryService.getArticleColumnView(articleId);
+            if (null != columnView) {
+                dataModel.put("longArticleColumn", columnView.optJSONObject("column"));
+                dataModel.put("longArticleChapters", columnView.opt("chapters"));
+                article.put("longArticleChapterNo", columnView.optInt(LongArticleColumn.CHAPTER_NO));
+                dataModel.put("longArticleColumnView", columnView);
+            }
         }
 
         String cmtViewModeStr = context.param("m");
@@ -1354,7 +1469,10 @@ public class ArticleProcessor {
             livenessMgmtService.incLiveness(viewer.optString(Keys.OBJECT_ID), Liveness.LIVENESS_PV);
         }
 
-        if (!Sessions.isBot()) {
+        if (Sessions.isBot()) {
+            articleSearchVisitStatMgmtService.recordCrawler(articleId, Requests.getRemoteAddr(request),
+                    Headers.getHeader(request, Common.USER_AGENT, ""));
+        } else {
             final long created = System.currentTimeMillis();
             final long expired = DateUtils.addMonths(new Date(created), 1).getTime();
             final String ip = Requests.getRemoteAddr(request);
@@ -1413,8 +1531,17 @@ public class ArticleProcessor {
         dataModel.put(Article.ARTICLE_T_PREVIOUS, previous);
         dataModel.put(Article.ARTICLE_T_NEXT, next);
         if (Article.ARTICLE_TYPE_C_LONG == article.optInt(Article.ARTICLE_TYPE)) {
-            final JSONObject longPrev = articleQueryService.getPreviousLongArticle(articleId, articleAuthorId);
-            final JSONObject longNext = articleQueryService.getNextLongArticle(articleId, articleAuthorId);
+            JSONObject longPrev;
+            JSONObject longNext;
+            final JSONObject longColumnView = (JSONObject) dataModel.get("longArticleColumnView");
+            if (null != longColumnView) {
+                longPrev = longColumnView.optJSONObject("previous");
+                longNext = longColumnView.optJSONObject("next");
+            } else {
+                longPrev = articleQueryService.getPreviousLongArticle(articleId, articleAuthorId);
+                longNext = articleQueryService.getNextLongArticle(articleId, articleAuthorId);
+            }
+
             dataModel.put("longArticlePrevious", longPrev);
             dataModel.put("longArticleNext", longNext);
         }
@@ -1451,6 +1578,7 @@ public class ArticleProcessor {
         dataModel.put(Pagination.PAGINATION_PAGE_NUMS, pageNums);
         dataModel.put(Common.ARTICLE_COMMENTS_PAGE_SIZE, pageSize);
 
+        reactionQueryService.fillArticleReaction(article, currentUserId);
         dataModel.put(Common.DISCUSSION_VIEWABLE, article.optBoolean(Common.DISCUSSION_VIEWABLE));
         if (!article.optBoolean(Common.DISCUSSION_VIEWABLE)) {
             article.put(Article.ARTICLE_T_COMMENTS, (Object) Collections.emptyList());
@@ -1529,6 +1657,9 @@ public class ArticleProcessor {
             Stopwatchs.end();
         }
 
+        reactionQueryService.fillCommentReactions(niceComments, currentUserId);
+        reactionQueryService.fillCommentReactions(articleComments, currentUserId);
+
         // Referral statistic
         final String referralUserName = context.param("r");
         if (!UserRegisterValidationMidware.invalidUserName(referralUserName)) {
@@ -1597,6 +1728,9 @@ public class ArticleProcessor {
         final boolean articleNotifyFollowers = requestJSONObject.optBoolean(Article.ARTICLE_T_NOTIFY_FOLLOWERS);
         final Integer articleShowInList = requestJSONObject.optInt(Article.ARTICLE_SHOW_IN_LIST, Article.ARTICLE_SHOW_IN_LIST_C_YES);
         final String isGoodArticle = requestJSONObject.optString("isGoodArticle");
+        final String longArticleColumnId = requestJSONObject.optString(LongArticleColumn.COLUMN_ID);
+        final String longArticleColumnTitle = requestJSONObject.optString(LongArticleColumn.COLUMN_TITLE);
+        final String longArticleChapterNo = requestJSONObject.optString(LongArticleColumn.CHAPTER_NO);
 
         final JSONObject article = new JSONObject();
         article.put(Article.ARTICLE_TITLE, articleTitle);
@@ -1616,6 +1750,9 @@ public class ArticleProcessor {
         article.put(Article.ARTICLE_ANONYMOUS, articleAnonymous);
         article.put(Article.ARTICLE_T_NOTIFY_FOLLOWERS, articleNotifyFollowers);
         article.put(Article.ARTICLE_SHOW_IN_LIST, articleShowInList);
+        article.put(LongArticleColumn.COLUMN_ID, longArticleColumnId);
+        article.put(LongArticleColumn.COLUMN_TITLE, longArticleColumnTitle);
+        article.put(LongArticleColumn.CHAPTER_NO, longArticleChapterNo);
         try {
             JSONObject currentUser = Sessions.getUser();
             try {
@@ -1740,16 +1877,28 @@ public class ArticleProcessor {
             return;
         }
 
-        final AbstractFreeMarkerRenderer renderer = new SkinRenderer(context, "home/post.ftl");
+        final int articleType = article.optInt(Article.ARTICLE_TYPE);
+        final String updateTemplate = Article.ARTICLE_TYPE_C_LONG == articleType ? "home/long-article-post.ftl" : "home/post.ftl";
+        final AbstractFreeMarkerRenderer renderer = new SkinRenderer(context, updateTemplate);
         final Map<String, Object> dataModel = renderer.getDataModel();
 
         String title = article.optString(Article.ARTICLE_TITLE);
         title = Escapes.escapeHTML(title);
         article.put(Article.ARTICLE_TITLE, title);
         dataModel.put(Article.ARTICLE, article);
-        dataModel.put(Article.ARTICLE_TYPE, article.optInt(Article.ARTICLE_TYPE));
+        dataModel.put(Article.ARTICLE_TYPE, articleType);
 
         dataModelService.fillHeaderAndFooter(context, dataModel);
+
+        if (Article.ARTICLE_TYPE_C_LONG == articleType) {
+            String articleContentErrorLabel = langPropsService.get("articleContentErrorLabel");
+            articleContentErrorLabel = articleContentErrorLabel.replace("{maxArticleContentLength}",
+                    String.valueOf(ArticlePostValidationMidware.MAX_ARTICLE_CONTENT_LENGTH));
+            dataModel.put("articleContentErrorLabel", articleContentErrorLabel);
+            fillPostArticleRequisite(dataModel, currentUser);
+            fillLongArticleColumnRequisite(dataModel, currentUser, articleId);
+            return;
+        }
 
         fillDomainsWithTags(dataModel);
 
@@ -1825,6 +1974,9 @@ public class ArticleProcessor {
         final String ua = Headers.getHeader(request, Common.USER_AGENT, "");
         final boolean articleNotifyFollowers = requestJSONObject.optBoolean(Article.ARTICLE_T_NOTIFY_FOLLOWERS);
         final Integer articleShowInList = requestJSONObject.optInt(Article.ARTICLE_SHOW_IN_LIST, Article.ARTICLE_SHOW_IN_LIST_C_YES);
+        final String longArticleColumnId = requestJSONObject.optString(LongArticleColumn.COLUMN_ID);
+        final String longArticleColumnTitle = requestJSONObject.optString(LongArticleColumn.COLUMN_TITLE);
+        final String longArticleChapterNo = requestJSONObject.optString(LongArticleColumn.CHAPTER_NO);
         final JSONObject article = new JSONObject();
         article.put(Keys.OBJECT_ID, id);
         article.put(Article.ARTICLE_TITLE, articleTitle);
@@ -1843,6 +1995,9 @@ public class ArticleProcessor {
         article.put(Article.ARTICLE_UA, ua);
         article.put(Article.ARTICLE_T_NOTIFY_FOLLOWERS, articleNotifyFollowers);
         article.put(Article.ARTICLE_SHOW_IN_LIST, articleShowInList);
+        article.put(LongArticleColumn.COLUMN_ID, longArticleColumnId);
+        article.put(LongArticleColumn.COLUMN_TITLE, longArticleColumnTitle);
+        article.put(LongArticleColumn.CHAPTER_NO, longArticleChapterNo);
         JSONObject currentUser = Sessions.getUser();
         try {
             currentUser = ApiProcessor.getUserByKey(requestJSONObject.optString("apiKey"));

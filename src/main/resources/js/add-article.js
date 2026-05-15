@@ -23,7 +23,6 @@
  * @author <a href="http://88250.b3log.org">Liang Ding</a>
  * @author <a href="https://ld246.com/member/ZephyrJung">Zephyr</a>
  * @author <a href="https://qiankunpingtai.cn">qiankunpingtai</a>
- * @version 2.26.2.1, Apr 30, 2020
  */
 
 /**
@@ -234,6 +233,30 @@ var AddArticle = {
         requestJSONObject.articleShowInList = Boolean($('#articleShowInList').prop('checked')) ? 1 : 0;
       }
 
+      if ($('#longArticleColumnId').length > 0) {
+        var longArticleColumnId = $('#longArticleColumnId').val()
+        var longArticleColumnTitle = ''
+        if (longArticleColumnId === '__NEW__') {
+          longArticleColumnTitle = $('#longArticleColumnTitle').val().replace(/(^\s*)|(\s*$)/g, '')
+          if (longArticleColumnTitle === '') {
+            $('#addArticleTip').addClass('error').html('<ul><li>请输入新专栏名称</li></ul>')
+            return false
+          }
+        }
+        requestJSONObject.columnId = longArticleColumnId
+        requestJSONObject.columnTitle = longArticleColumnTitle
+
+        var chapterNo = ''
+        if (longArticleColumnId !== '' && $('#longArticleChapterNo').length > 0) {
+          chapterNo = $('#longArticleChapterNo').val().replace(/(^\s*)|(\s*$)/g, '')
+        }
+        if (chapterNo !== '' && !/^[1-9][0-9]*$/.test(chapterNo)) {
+          $('#addArticleTip').addClass('error').html('<ul><li>章节号必须是正整数</li></ul>')
+          return false
+        }
+        requestJSONObject.chapterNo = chapterNo
+      }
+
       if ($('#articleStatement').length > 0) {
         requestJSONObject.articleStatement = $('#articleStatement').val();
       }
@@ -418,6 +441,7 @@ var AddArticle = {
     }
 
     this._initTag()
+    this._initLongArticleColumn()
 
     // focus
     if ($('#articleTitle').val().length <= 0) {
@@ -468,7 +492,7 @@ var AddArticle = {
         }
       })
 
-    if ($('#articleAskPoint').length === 0) {
+    if ($('#articleAskPoint').length === 0 && $('#articleRewardContent').length > 0) {
       // 初始化打赏区编辑器
       if (0 < $('#articleRewardPoint').val().replace(/(^\s*)|(\s*$)/g, '')) {
         $('#showReward').click()
@@ -495,7 +519,7 @@ var AddArticle = {
       })
     }
 
-    if ($('#articleAskPoint').length === 0) {
+    if ($('#articleAskPoint').length === 0 && $('#articleRewardPoint').length > 0) {
       if ('' !== postData.rewardContent) {
         $('#showReward').click()
         AddArticle.rewardEditor.setValue(postData.rewardContent)
@@ -510,7 +534,7 @@ var AddArticle = {
         postData.rewardPoint = $(this).val()
         localStorage.postData = JSON.stringify(postData)
       })
-    } else {
+    } else if ($('#articleAskPoint').length > 0) {
       $('#articleAskPoint').keyup(function () {
         var postData = JSON.parse(localStorage.postData)
         postData.QnAOfferPoint = $(this).val()
@@ -522,10 +546,59 @@ var AddArticle = {
     }
   },
   /**
+   * @description 初始化长文专栏信息
+   */
+  _initLongArticleColumn: function () {
+    if ($('#longArticleColumnId').length === 0) {
+      return
+    }
+
+    $('#longArticleColumnId').change(function () {
+      AddArticle.toggleLongColumnCreate()
+    })
+
+    AddArticle.toggleLongColumnCreate()
+  },
+  /**
+   * @description 切换新建专栏输入框
+   */
+  toggleLongColumnCreate: function () {
+    if ($('#longArticleColumnId').length === 0) {
+      return
+    }
+
+    var selectedColumnId = $('#longArticleColumnId').val()
+    var isCreateColumn = selectedColumnId === '__NEW__'
+    var isColumnEnabled = selectedColumnId !== ''
+
+    if ($('#longArticleColumnTitleWrap').length > 0) {
+      if (isCreateColumn) {
+        $('#longArticleColumnTitleWrap').show()
+        $('#longArticleColumnTitle').focus()
+      } else {
+        $('#longArticleColumnTitleWrap').hide()
+      }
+    }
+
+    if ($('#longArticleChapterWrap').length > 0 && $('#longArticleChapterNo').length > 0) {
+      if (isColumnEnabled) {
+        $('#longArticleChapterWrap').show()
+        $('#longArticleChapterNo').prop('disabled', false)
+      } else {
+        $('#longArticleChapterWrap').hide()
+        $('#longArticleChapterNo').prop('disabled', true).val('')
+      }
+    }
+  },
+  /**
    * @description 初始化标签编辑器
    * @returns {undefined}
    */
   _initTag: function () {
+    if ($('#articleTags').length === 0 || $('.tags-input').length === 0) {
+      return
+    }
+
     $.ua.set(navigator.userAgent)
 
     // 添加 tag 到输入框

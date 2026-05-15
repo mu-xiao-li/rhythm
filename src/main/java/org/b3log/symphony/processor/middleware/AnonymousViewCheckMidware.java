@@ -32,7 +32,6 @@ import org.b3log.latke.ioc.Inject;
 import org.b3log.latke.ioc.Singleton;
 import org.b3log.latke.repository.RepositoryException;
 import org.b3log.latke.util.AntPathMatcher;
-import org.b3log.latke.util.Execs;
 import org.b3log.latke.util.Requests;
 import org.b3log.latke.util.URLs;
 import org.b3log.symphony.cache.UserCache;
@@ -44,8 +43,10 @@ import org.b3log.symphony.repository.ArticleRepository;
 import org.b3log.symphony.service.OptionQueryService;
 import org.b3log.symphony.service.UserMgmtService;
 import org.b3log.symphony.service.UserQueryService;
+import org.b3log.symphony.util.Firewall;
 import org.b3log.symphony.util.Headers;
 import org.b3log.symphony.util.Sessions;
+import org.b3log.symphony.util.SearchEngines;
 import org.b3log.symphony.util.Symphonys;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -66,6 +67,8 @@ public class AnonymousViewCheckMidware {
      * Logger.
      */
     private static final Logger LOGGER = LogManager.getLogger(AnonymousViewCheckMidware.class);
+
+    private static final String ARTICLE_RANDOM_PATH = "random";
 
     /**
      * Article repository.
@@ -129,6 +132,12 @@ public class AnonymousViewCheckMidware {
      */
     private static volatile boolean firstVisitCaptchaEnabled = true;
 
+    private static final int AUTO_BAN_VISIT_THRESHOLD = 100;
+
+    private static final int CAPTCHA_VISIT_INTERVAL = 5;
+
+    private static final long FIRST_VISIT_CAPTCHA_WINDOW_MILLIS = 2L * 60L * 60L * 1000L;
+
     public static void setEnabled(final boolean value) {
         enabled = value;
     }
@@ -175,7 +184,8 @@ public class AnonymousViewCheckMidware {
 
         final Request request = context.getRequest();
         final String requestURI = context.requestURI();
-        final boolean firstVisitArticle = requestURI.startsWith("/article/");
+        final String articleId = getArticleId(requestURI);
+        final boolean firstVisitArticle = StringUtils.isNotBlank(articleId);
         JSONObject currentUser = Sessions.getUser();
         try {
             currentUser = ApiProcessor.getUserByKey(context.param("apiKey"));
@@ -188,7 +198,7 @@ public class AnonymousViewCheckMidware {
                     whiteList.add(ip);
                 } else {
                     final String ua = Headers.getHeader(request, Common.USER_AGENT, "");
-                    if (shieldEnabled && !isSearchEngineBot(ua)) {
+                    if (shieldEnabled && !SearchEngines.isVerifiedCrawler(ip, ua)) {
                         // 初始化首次访问时间（用于 2 小时内首次访问逻辑）
                         Long firstVisitTime = ipFirstVisitTimeCache.getIfPresent(ip);
                         long now = System.currentTimeMillis();
@@ -203,9 +213,10 @@ public class AnonymousViewCheckMidware {
                         count++;
                         ipVisitCountCache.put(ip, count);
 
-                        if (count >= 100) {
-                            String result = Execs.exec(new String[]{"sh", "-c", "ipset add fishpi " + ip}, 1000 * 3);
-                            System.out.println(ip + " 已封禁");
+                        if (count >= AUTO_BAN_VISIT_THRESHOLD) {
+                            if (Firewall.banIpIfAbsent(ip, "Anonymous captcha threshold")) {
+                                System.out.println(ip + " 已封禁");
+                            }
                         }
 
                         // 判断是否需要进入验证码流程
@@ -214,16 +225,16 @@ public class AnonymousViewCheckMidware {
                         // 2 小时内首次访问：第一次就需要验证码（可单独开关）
                         Long lastPassTime = ipLastCaptchaPassTimeCache.getIfPresent(ip);
                         if (firstVisitCaptchaEnabled
-                                && !firstVisitArticle
-                                && lastPassTime == null
-                                && (now - firstVisitTime) <= 2L * 60L * 60L * 1000L) {
+                                 && !firstVisitArticle
+                                 && lastPassTime == null
+                                 && (now - firstVisitTime) <= FIRST_VISIT_CAPTCHA_WINDOW_MILLIS) {
                             if (count == 1) {
                                 needCaptcha = true;
                             }
                         }
 
                         // 之后每访问 5 次需要一次验证码
-                        if (!needCaptcha && count % 5 == 0) {
+                        if (!needCaptcha && count % CAPTCHA_VISIT_INTERVAL == 0) {
                             needCaptcha = true;
                         }
 
@@ -231,6 +242,7 @@ public class AnonymousViewCheckMidware {
                             // 进入黑名单并跳转验证码页面
                             ipBlacklistCache.put(ip, true);
                             context.sendRedirect("/test");
+                            context.abort();
                             System.out.println(ip + " 触发验证码，进入黑名单");
                             return;
                         }
@@ -254,9 +266,7 @@ public class AnonymousViewCheckMidware {
             }
         }
 
-        if (requestURI.startsWith(Latkes.getContextPath() + "/article/")) {
-            final String articleId = StringUtils.substringAfter(requestURI, Latkes.getContextPath() + "/article/");
-
+        if (StringUtils.isNotBlank(articleId)) {
             try {
                 final JSONObject article = articleRepository.get(articleId);
                 if (null == article) {
@@ -331,16 +341,19 @@ public class AnonymousViewCheckMidware {
         context.handle();
     }
 
-    private static final List<String> SEARCH_ENGINE_BOTS = Arrays.asList(
-            "Googlebot", "Bingbot", "Baiduspider", "Sogou", "360Spider", "YandexBot", "DuckDuckBot"
-    );
-
-    public static boolean isSearchEngineBot(String ua) {
-        if (ua == null) return false;
-        for (String bot : SEARCH_ENGINE_BOTS) {
-            if (ua.contains(bot)) return true;
+    private static String getArticleId(final String requestURI) {
+        final String articlePrefix = Latkes.getContextPath() + "/article/";
+        if (!requestURI.startsWith(articlePrefix)) {
+            return "";
         }
-        return false;
+
+        final String articlePath = StringUtils.substringAfter(requestURI, articlePrefix);
+        final String articleId = StringUtils.substringBefore(articlePath, "/");
+        if (StringUtils.isBlank(articleId) || ARTICLE_RANDOM_PATH.equals(articleId)) {
+            return "";
+        }
+
+        return articleId;
     }
 
 }

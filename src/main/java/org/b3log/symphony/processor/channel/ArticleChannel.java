@@ -39,9 +39,11 @@ import org.b3log.symphony.model.*;
 import org.b3log.symphony.processor.AdminProcessor;
 import org.b3log.symphony.processor.ApiProcessor;
 import org.b3log.symphony.service.CloudService;
+import org.b3log.symphony.service.ReactionQueryService;
 import org.b3log.symphony.service.RoleQueryService;
 import org.b3log.symphony.service.UserQueryService;
 import org.b3log.symphony.util.Sessions;
+import org.b3log.symphony.util.Symphonys;
 import org.b3log.symphony.util.Templates;
 import org.json.JSONObject;
 
@@ -177,6 +179,8 @@ public class ArticleChannel implements WebSocketChannel {
                 message.put(Comment.COMMENT_T_VOTE, -1);
                 message.put(Common.REWARDED, false);
                 message.put(Comment.COMMENT_REVISION_COUNT, 1);
+                final ReactionQueryService reactionQueryService = beanManager.getReference(ReactionQueryService.class);
+                reactionQueryService.fillCommentReaction(message, user == null ? "" : user.optString(Keys.OBJECT_ID));
 
                 final Map dataModel = new HashMap();
                 dataModel.put(Common.IS_LOGGED_IN, isLoggedIn);
@@ -226,7 +230,7 @@ public class ArticleChannel implements WebSocketChannel {
 
                 String templateDirName = httpSession.getAttribute(Keys.TEMPLATE_DIR_NAME);
                 if (templateDirName == null) {
-                    templateDirName = "classic";
+                    templateDirName = Symphonys.SKIN_DIR_NAME;
                 }
                 final Template template = Templates.getTemplate(templateDirName + "/common/comment.ftl");
                 final StringWriter stringWriter = new StringWriter();
@@ -240,6 +244,38 @@ public class ArticleChannel implements WebSocketChannel {
             } catch (final Exception e) {
                 LOGGER.log(Level.ERROR, "Notify comment failed", e);
             }
+        }
+    }
+
+    public static void notifyCommentReaction(final JSONObject message) {
+        message.put(Common.TYPE, "commentReaction");
+
+        final String msgStr = message.toString();
+        for (final WebSocketSession session : SESSIONS) {
+            final String viewingArticleId = session.getParameter(Article.ARTICLE_T_ID);
+            if (StringUtils.isBlank(viewingArticleId)
+                    || !viewingArticleId.equals(message.optString(Article.ARTICLE_T_ID))) {
+                continue;
+            }
+
+            session.sendText(msgStr);
+            AdminProcessor.manager.onMessageSent(2, msgStr.length());
+        }
+    }
+
+    public static void notifyArticleReaction(final JSONObject message) {
+        message.put(Common.TYPE, "articleReaction");
+
+        final String msgStr = message.toString();
+        for (final WebSocketSession session : SESSIONS) {
+            final String viewingArticleId = session.getParameter(Article.ARTICLE_T_ID);
+            if (StringUtils.isBlank(viewingArticleId)
+                    || !viewingArticleId.equals(message.optString(Article.ARTICLE_T_ID))) {
+                continue;
+            }
+
+            session.sendText(msgStr);
+            AdminProcessor.manager.onMessageSent(2, msgStr.length());
         }
     }
 

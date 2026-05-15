@@ -75,6 +75,10 @@ public class ArticleQueryService {
      */
     private static final Logger LOGGER = LogManager.getLogger(ArticleQueryService.class);
 
+    private static final int INDEX_FIRST_PAGE = 1;
+
+    private static final int INDEX_SECOND_PAGE = 2;
+
     /**
      * Article repository.
      */
@@ -164,6 +168,12 @@ public class ArticleQueryService {
      */
     @Inject
     private TagQueryService tagQueryService;
+
+    /**
+     * Long article column query service.
+     */
+    @Inject
+    private LongArticleColumnQueryService longArticleColumnQueryService;
 
     /**
      * Gets the question articles with the specified fetch size.
@@ -852,7 +862,8 @@ public class ArticleQueryService {
             final StringBuilder queryCount = new StringBuilder("select count(0) ").append(" from ");
             final StringBuilder queryList = new StringBuilder("select symphony_article.oId").append(" from ");
             final StringBuilder queryStr = new StringBuilder(articleRepository.getName() + " symphony_article, ").append(tagArticleRepository.getName() + " symphony_tag_article ");
-            queryStr.append("where symphony_article.oId=symphony_tag_article.article_oId and symphony_article.articleShowInList != ? ");
+            queryStr.append("where symphony_article.oId=symphony_tag_article.article_oId and symphony_article.articleShowInList != ? ")
+                    .append(" and symphony_article.articleType!=").append(Article.ARTICLE_TYPE_C_LONG).append(' ');
             switch (sortMode) {
                 case 0:
                     queryStr.append(" and ").append("symphony_tag_article." + Tag.TAG + '_' + Keys.OBJECT_ID).append("=").append(tag.optString(Keys.OBJECT_ID)).
@@ -1186,6 +1197,7 @@ public class ArticleQueryService {
         final List<Filter> filters = new ArrayList<>();
         filters.add(new PropertyFilter(Article.ARTICLE_STATUS, FilterOperator.NOT_EQUAL, Article.ARTICLE_STATUS_C_INVALID));
         filters.add(new PropertyFilter(Article.ARTICLE_TYPE, FilterOperator.NOT_EQUAL, Article.ARTICLE_TYPE_C_DISCUSSION));
+        filters.add(new PropertyFilter(Article.ARTICLE_TYPE, FilterOperator.NOT_EQUAL, Article.ARTICLE_TYPE_C_LONG));
         filters.add(new PropertyFilter(Article.ARTICLE_TAGS, FilterOperator.NOT_EQUAL, Tag.TAG_TITLE_C_SANDBOX));
         filters.add(new PropertyFilter(Article.ARTICLE_TAGS, FilterOperator.NOT_LIKE, "B3log%"));
         filters.add(new PropertyFilter(Article.ARTICLE_SHOW_IN_LIST, FilterOperator.NOT_EQUAL, Article.ARTICLE_SHOW_IN_LIST_C_NOT));
@@ -1313,32 +1325,14 @@ public class ArticleQueryService {
         try {
             Stopwatchs.start("Query index recent articles");
             try {
-                Query query = new Query().
-                        setFilter(CompositeFilterOperator.and(
-                                new PropertyFilter(Article.ARTICLE_TYPE, FilterOperator.NOT_EQUAL, Article.ARTICLE_TYPE_C_DISCUSSION),
-                                new PropertyFilter(Article.ARTICLE_TYPE, FilterOperator.NOT_EQUAL, Article.ARTICLE_TYPE_C_LONG),
-                                new PropertyFilter(Article.ARTICLE_STATUS, FilterOperator.EQUAL, Article.ARTICLE_STATUS_C_VALID),
-                                new PropertyFilter(Article.ARTICLE_SHOW_IN_LIST, FilterOperator.NOT_EQUAL, Article.ARTICLE_SHOW_IN_LIST_C_NOT),
-                                new PropertyFilter(Article.ARTICLE_CREATE_TIME, FilterOperator.GREATER_THAN_OR_EQUAL, String.valueOf(DateUtils.addDays(new Date(), -30).getTime())))).
-                        setPageCount(1).setPage(page, fetchSize).
-                        addSort(Article.ARTICLE_LATEST_CMT_TIME, SortDirection.DESCENDING);
-                ret = articleRepository.getList(query);
-
+                final int normalizedPage = Math.max(page, INDEX_FIRST_PAGE);
                 final List<JSONObject> stickArticles = getStickArticles();
-                if (!stickArticles.isEmpty() && page == 1) {
-                    final Iterator<JSONObject> i = ret.iterator();
-                    while (i.hasNext()) {
-                        final JSONObject article = i.next();
-                        for (final JSONObject stickArticle : stickArticles) {
-                            if (article.optString(Keys.OBJECT_ID).equals(stickArticle.optString(Keys.OBJECT_ID))) {
-                                i.remove();
-                            }
-                        }
-                    }
+                final Set<String> stickArticleIds = buildArticleIdSet(stickArticles);
 
-                    ret.addAll(0, stickArticles);
-                    final int size = ret.size() < fetchSize ? ret.size() : fetchSize;
-                    ret = ret.subList(0, size);
+                if (INDEX_FIRST_PAGE == normalizedPage) {
+                    ret = getFirstIndexRecentArticles(fetchSize, stickArticles, stickArticleIds);
+                } else {
+                    ret = getLaterIndexRecentArticles(fetchSize, normalizedPage, stickArticleIds);
                 }
             } finally {
                 Stopwatchs.end();
@@ -1354,36 +1348,151 @@ public class ArticleQueryService {
         }
     }
 
-    /**
-     * Gets the long articles (articleType=6) for index display.
-     *
-     * @param fetchSize the specified fetch size
-     * @return long articles, returns an empty list if not found
-     */
-    public List<JSONObject> getIndexLongArticles(int fetchSize) {
-        try {
-            Stopwatchs.start("Query index long articles");
-            try {
-                Query query = new Query().
-                        setFilter(CompositeFilterOperator.and(
-                                new PropertyFilter(Article.ARTICLE_TYPE, FilterOperator.EQUAL, Article.ARTICLE_TYPE_C_LONG),
-                                new PropertyFilter(Article.ARTICLE_STATUS, FilterOperator.EQUAL, Article.ARTICLE_STATUS_C_VALID),
-                                new PropertyFilter(Article.ARTICLE_SHOW_IN_LIST, FilterOperator.NOT_EQUAL, Article.ARTICLE_SHOW_IN_LIST_C_NOT))).
-                        setPageCount(1).setPage(1, fetchSize).
-                        addSort(Article.ARTICLE_CREATE_TIME, SortDirection.DESCENDING);
-                final List<JSONObject> ret = articleRepository.getList(query);
+    private List<JSONObject> getFirstIndexRecentArticles(final int fetchSize, final List<JSONObject> stickArticles,
+                                                         final Set<String> stickArticleIds) throws RepositoryException {
+        final Query query = buildIndexRecentArticlesQuery(INDEX_FIRST_PAGE, fetchSize);
+        final List<JSONObject> articles = articleRepository.getList(query);
+        final List<JSONObject> ordinaryArticles = excludeArticleIds(articles, stickArticleIds);
+        final List<JSONObject> ret = new ArrayList<>(stickArticles.size() + ordinaryArticles.size());
+        ret.addAll(stickArticles);
+        ret.addAll(ordinaryArticles);
 
-                organizeArticles(ret);
+        return ret;
+    }
 
-                return ret;
-            } finally {
-                Stopwatchs.end();
-            }
-        } catch (final RepositoryException e) {
-            LOGGER.log(Level.ERROR, "Gets index long articles failed", e);
-
-            return Collections.emptyList();
+    private List<JSONObject> getLaterIndexRecentArticles(final int fetchSize, final int page,
+                                                         final Set<String> stickArticleIds) throws RepositoryException {
+        final int duplicatedCount = countFirstPageStickArticles(fetchSize, stickArticleIds);
+        final int extraSize = Math.max(0, stickArticleIds.size() - duplicatedCount);
+        final int pageSize = fetchSize + extraSize;
+        final int fromIndex = fetchSize - duplicatedCount + (page - INDEX_SECOND_PAGE) * pageSize;
+        final int toIndex = fromIndex + pageSize;
+        final List<JSONObject> articles = getIndexRecentArticlesWithoutSticks(toIndex, stickArticleIds);
+        if (articles.size() <= fromIndex) {
+            return new ArrayList<>();
         }
+
+        return new ArrayList<>(articles.subList(fromIndex, Math.min(articles.size(), toIndex)));
+    }
+
+    private Query buildIndexRecentArticlesQuery(final int page, final int fetchSize) {
+        return new Query().
+                setFilter(CompositeFilterOperator.and(
+                        new PropertyFilter(Article.ARTICLE_TYPE, FilterOperator.NOT_EQUAL, Article.ARTICLE_TYPE_C_DISCUSSION),
+                        new PropertyFilter(Article.ARTICLE_TYPE, FilterOperator.NOT_EQUAL, Article.ARTICLE_TYPE_C_LONG),
+                        new PropertyFilter(Article.ARTICLE_STATUS, FilterOperator.EQUAL, Article.ARTICLE_STATUS_C_VALID),
+                        new PropertyFilter(Article.ARTICLE_SHOW_IN_LIST, FilterOperator.NOT_EQUAL, Article.ARTICLE_SHOW_IN_LIST_C_NOT),
+                        new PropertyFilter(Article.ARTICLE_CREATE_TIME, FilterOperator.GREATER_THAN_OR_EQUAL, String.valueOf(DateUtils.addDays(new Date(), -30).getTime())))).
+                setPageCount(1).setPage(page, fetchSize).
+                addSort(Article.ARTICLE_LATEST_CMT_TIME, SortDirection.DESCENDING);
+    }
+
+    private Set<String> buildArticleIdSet(final List<JSONObject> articles) {
+        final Set<String> articleIds = new HashSet<>();
+        for (final JSONObject article : articles) {
+            articleIds.add(article.optString(Keys.OBJECT_ID));
+        }
+
+        return articleIds;
+    }
+
+    private int countFirstPageStickArticles(final int fetchSize, final Set<String> stickArticleIds) throws RepositoryException {
+        if (stickArticleIds.isEmpty()) {
+            return 0;
+        }
+
+        final Query firstPageQuery = buildIndexRecentArticlesQuery(INDEX_FIRST_PAGE, fetchSize);
+        final List<JSONObject> firstPageArticles = articleRepository.getList(firstPageQuery);
+        return countArticleIds(firstPageArticles, stickArticleIds);
+    }
+
+    private int countArticleIds(final List<JSONObject> articles, final Set<String> articleIds) {
+        int count = 0;
+        for (final JSONObject article : articles) {
+            if (articleIds.contains(article.optString(Keys.OBJECT_ID))) {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private List<JSONObject> getIndexRecentArticlesWithoutSticks(final int fetchSize,
+                                                                 final Set<String> stickArticleIds) throws RepositoryException {
+        final Query query = buildIndexRecentArticlesQuery(INDEX_FIRST_PAGE, fetchSize + stickArticleIds.size());
+        final List<JSONObject> articles = articleRepository.getList(query);
+        return excludeArticleIds(articles, stickArticleIds);
+    }
+
+    private List<JSONObject> excludeArticleIds(final List<JSONObject> articles, final Set<String> excludedIds) {
+        if (excludedIds.isEmpty()) {
+            return new ArrayList<>(articles);
+        }
+
+        final List<JSONObject> ret = new ArrayList<>(articles.size());
+        for (final JSONObject article : articles) {
+            if (!excludedIds.contains(article.optString(Keys.OBJECT_ID))) {
+                ret.add(article);
+            }
+        }
+
+        return ret;
+    }
+
+    private void fillLongArticleCovers(final List<JSONObject> articles) {
+        for (final JSONObject article : articles) {
+            String cover = article.optString(Article.ARTICLE_T_THUMBNAIL_URL);
+            if (StringUtils.isBlank(cover)) {
+                cover = getArticleCoverRelaxed(article);
+            }
+            if (StringUtils.isNotBlank(cover)) {
+                article.put(Article.ARTICLE_T_LONG_COVER_URL, cover);
+            }
+        }
+    }
+
+    private String getArticleCoverRelaxed(final JSONObject article) {
+        final int articleType = article.optInt(Article.ARTICLE_TYPE);
+        if (Article.ARTICLE_TYPE_C_THOUGHT == articleType) {
+            return "";
+        }
+
+        final String content = article.optString(Article.ARTICLE_CONTENT);
+        if (StringUtils.isBlank(content)) {
+            return "";
+        }
+
+        final String html = Markdowns.toHTML(content);
+        final String[] imgs = StringUtils.substringsBetween(html, "<img", ">");
+        if (null == imgs || 0 == imgs.length) {
+            return "";
+        }
+
+        String ret = null;
+        for (int i = 0; i < imgs.length; i++) {
+            ret = StringUtils.substringBetween(imgs[i], "data-src=\"", "\"");
+            if (StringUtils.isBlank(ret)) {
+                ret = StringUtils.substringBetween(imgs[i], "src=\"", "\"");
+            }
+            if (StringUtils.isBlank(ret)) {
+                continue;
+            }
+            if (!StringUtils.containsIgnoreCase(ret, ".ico")) {
+                break;
+            }
+        }
+
+        if (StringUtils.isBlank(ret)) {
+            return "";
+        }
+
+        if (StringUtils.startsWith(ret, "//")) {
+            ret = "https:" + ret;
+        } else if (StringUtils.startsWith(ret, "/") && !StringUtils.startsWith(ret, Latkes.getServePath())) {
+            ret = Latkes.getServePath() + ret;
+        }
+
+        return ret;
     }
 
     /**
@@ -1463,7 +1572,8 @@ public class ArticleQueryService {
                     return 1;
                 }
             });
-            organizeArticles(ret);
+                organizeArticles(ret);
+                fillLongArticleCovers(ret);
             Collections.shuffle(ret);
             hotArticlesCache = Collections.synchronizedList(new ArrayList<>(ret));
             System.out.println(">>> Refreshed hot articles cache.");
@@ -1702,11 +1812,34 @@ public class ArticleQueryService {
         final List<JSONObject> tags = tagQueryService.buildTagObjs(tagsStr);
         article.put(Article.ARTICLE_T_TAG_OBJS, (Object) tags);
 
+        if (Article.ARTICLE_TYPE_C_LONG == articleType) {
+            fillLongArticleChapterMeta(article);
+        }
+
         // q&a status
         if (Article.ARTICLE_TYPE_C_QNA == article.optInt(Article.ARTICLE_TYPE)) {
             final String articleAuthorId = article.optString(Article.ARTICLE_AUTHOR_ID);
             article.put(Common.OFFERED, rewardQueryService.isRewarded(articleAuthorId, articleId, Reward.TYPE_C_ACCEPT_COMMENT));
         }
+    }
+
+    private void fillLongArticleChapterMeta(final JSONObject article) {
+        final String articleId = article.optString(Keys.OBJECT_ID);
+        if (StringUtils.isBlank(articleId)) {
+            return;
+        }
+
+        final JSONObject chapterMeta = longArticleColumnQueryService.getArticleChapterMeta(articleId);
+        if (null == chapterMeta) {
+            article.remove(LongArticleColumn.COLUMN_ID);
+            article.remove(LongArticleColumn.COLUMN_TITLE);
+            article.remove(LongArticleColumn.CHAPTER_NO);
+            return;
+        }
+
+        article.put(LongArticleColumn.COLUMN_ID, chapterMeta.optString(LongArticleColumn.COLUMN_ID));
+        article.put(LongArticleColumn.COLUMN_TITLE, chapterMeta.optString(LongArticleColumn.COLUMN_TITLE));
+        article.put(LongArticleColumn.CHAPTER_NO, chapterMeta.optInt(LongArticleColumn.CHAPTER_NO));
     }
 
     /**
@@ -2334,7 +2467,7 @@ public class ArticleQueryService {
                         new PropertyFilter(Article.ARTICLE_STICK, FilterOperator.NOT_EQUAL, 0L),
                         new PropertyFilter(Article.ARTICLE_TYPE, FilterOperator.NOT_EQUAL, Article.ARTICLE_TYPE_C_DISCUSSION),
                         new PropertyFilter(Article.ARTICLE_STATUS, FilterOperator.EQUAL, Article.ARTICLE_STATUS_C_VALID))).
-                setPageCount(1).setPage(1, 5).
+                setPageCount(1).setPage(1, Integer.MAX_VALUE).
                 addSort(Article.ARTICLE_STICK, SortDirection.DESCENDING);
         try {
             return articleRepository.getList(query);

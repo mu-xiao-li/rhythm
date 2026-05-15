@@ -167,6 +167,15 @@ public class ArticleMgmtService {
     @Inject
     private LongArticleReadService longArticleReadService;
 
+    @Inject
+    private ArticleSearchVisitStatMgmtService articleSearchVisitStatMgmtService;
+
+    /**
+     * Long article column management service.
+     */
+    @Inject
+    private LongArticleColumnMgmtService longArticleColumnMgmtService;
+
     /**
      * Reward management service.
      */
@@ -394,6 +403,8 @@ public class ArticleMgmtService {
             articleCntOption.put(Option.OPTION_VALUE, articleCntOption.optInt(Option.OPTION_VALUE) - 1);
             optionRepository.update(Option.ID_C_STATISTIC_ARTICLE_COUNT, articleCntOption);
 
+            longArticleColumnMgmtService.removeChapterInCurrentTransaction(articleId);
+
             articleRepository.remove(articleId);
 
             // Remove article revisions
@@ -434,7 +445,7 @@ public class ArticleMgmtService {
             if (StringUtils.isNotBlank(audioURL)) {
                 audioMgmtService.removeAudioFile(audioURL);
             }
-        } catch (final RepositoryException e) {
+        } catch (final RepositoryException | ServiceException e) {
             LOGGER.log(Level.ERROR, "Removes an article error [id=" + articleId + "]", e);
         }
     }
@@ -481,6 +492,8 @@ public class ArticleMgmtService {
                 articleRepository.update(articleId, article, Article.ARTICLE_VIEW_CNT, Article.ARTICLE_RANDOM_DOUBLE);
 
                 transaction.commit();
+                articleSearchVisitStatMgmtService.recordReferer(articleId, visit.optString(Visit.VISIT_REFERER_URL));
+                articleSearchVisitStatMgmtService.recordClient(articleId, visit.optString(Visit.VISIT_UA));
             } catch (final RepositoryException e) {
                 if (transaction.isActive()) {
                     transaction.rollback();
@@ -737,6 +750,8 @@ public class ArticleMgmtService {
 
             final String articleId = articleRepository.add(article);
 
+            longArticleColumnMgmtService.syncChapterInCurrentTransaction(article.put(Keys.OBJECT_ID, articleId), requestJSONObject);
+
             if (Article.ARTICLE_TYPE_C_THOUGHT != articleType) {
                 final JSONObject revision = new JSONObject();
                 revision.put(Revision.REVISION_AUTHOR_ID, authorId);
@@ -962,6 +977,7 @@ public class ArticleMgmtService {
             articleToUpdate.put(Article.ARTICLE_AUDIO_URL, ""); // 小薇语音预览更新 https://github.com/b3log/symphony/issues/791
 
             articleRepository.update(articleId, articleToUpdate);
+            longArticleColumnMgmtService.syncChapterInCurrentTransaction(articleToUpdate, requestJSONObject);
 
             final boolean titleChanged = !oldTitle.replaceAll("\\s+", "").equals(articleTitle.replaceAll("\\s+", ""));
             final boolean contentChanged = !oldContent.replaceAll("\\s+", "").equals(articleContent.replaceAll("\\s+", ""));
@@ -1024,6 +1040,21 @@ public class ArticleMgmtService {
      * @param article   the specified article
      */
     public void updateArticleByAdmin(final String articleId, final JSONObject article) {
+        updateArticleByAdmin(articleId, article, null);
+    }
+
+    /**
+     * Updates the specified article by the given article id.
+     * <p>
+     * <b>Note</b>: This method just for admin console.
+     * </p>
+     *
+     * @param articleId                 the given article id
+     * @param article                   the specified article
+     * @param longArticleColumnRequest  long article column request, {@code null} for no column change
+     */
+    public void updateArticleByAdmin(final String articleId, final JSONObject article,
+                                     final JSONObject longArticleColumnRequest) {
         final Transaction transaction = articleRepository.beginTransaction();
 
         try {
@@ -1031,7 +1062,7 @@ public class ArticleMgmtService {
             final JSONObject author = userRepository.get(authorId);
 
             article.put(Article.ARTICLE_COMMENTABLE, Boolean.valueOf(article.optBoolean(Article.ARTICLE_COMMENTABLE)));
-            article.put(Article.ARTICLE_STATEMENT, Integer.valueOf(article.optInt(Article.ARTICLE_STATEMENT,0)));
+            article.put(Article.ARTICLE_STATEMENT, Integer.valueOf(article.optInt(Article.ARTICLE_STATEMENT, 0)));
 
             final JSONObject oldArticle = articleRepository.get(articleId);
 
@@ -1072,6 +1103,11 @@ public class ArticleMgmtService {
 
             userRepository.update(authorId, author);
             articleRepository.update(articleId, article);
+
+            if (null != longArticleColumnRequest) {
+                article.put(Keys.OBJECT_ID, articleId);
+                longArticleColumnMgmtService.syncChapterInCurrentTransaction(article, longArticleColumnRequest);
+            }
 
             transaction.commit();
 

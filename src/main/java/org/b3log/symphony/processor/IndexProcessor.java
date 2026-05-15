@@ -89,12 +89,21 @@ public class IndexProcessor {
      * Logger.
      */
     private static final Logger LOGGER = LogManager.getLogger(IndexProcessor.class);
+    private static final int HOME_LONG_COLUMN_FETCH_SIZE = 12;
+    private static final int HOME_LONG_HOT_COLUMN_SCAN_SIZE = 96;
+    private static final int HOME_LONG_HOT_MIN_UNIQUE_SIZE = 4;
 
     /**
      * Article query service.
      */
     @Inject
     private ArticleQueryService articleQueryService;
+
+    /**
+     * Long article column query service.
+     */
+    @Inject
+    private LongArticleColumnQueryService longArticleColumnQueryService;
 
     /**
      * User query service.
@@ -177,6 +186,8 @@ public class IndexProcessor {
         Dispatcher.get("/", indexProcessor::showIndex, anonymousViewCheckMidware::handle);
         Dispatcher.group().middlewares(loginCheck::handle).router().get().uris(new String[]{"/recent", "/recent/hot", "/recent/good", "/recent/reply"}).handler(indexProcessor::showRecent);
         Dispatcher.get("/recent/long", indexProcessor::showLongArticles, loginCheck::handle);
+        Dispatcher.get("/column", indexProcessor::showLongArticleColumns, loginCheck::handle);
+        Dispatcher.get("/column/{columnId}", indexProcessor::showLongArticleColumn, loginCheck::handle);
         Dispatcher.get("/about", indexProcessor::showAbout);
         Dispatcher.get("/kill-browser", indexProcessor::showKillBrowser);
         Dispatcher.get("/hot", indexProcessor::showHotArticles, loginCheck::handle);
@@ -445,14 +456,6 @@ public class IndexProcessor {
     public synchronized void loadIndexData() {
         Map<String, Object> dataModel = new HashMap<>();
 
-        // 签到排行
-        final List<JSONObject> users = activityQueryService.getTopCheckinUsers(10);
-        dataModel.put(Common.TOP_CHECKIN_USERS, users);
-
-        // 在线时间排行
-        final List<JSONObject> onlineTopUsers = activityQueryService.getTopOnlineTimeUsers(9);
-        dataModel.put("onlineTopUsers", onlineTopUsers);
-
         // 热议
         final List<JSONObject> hotArticles = articleQueryService.getHotArticles(11);
         dataModel.put(Common.HOT, hotArticles);
@@ -462,17 +465,50 @@ public class IndexProcessor {
         final List<JSONObject> qaArticles = (List<JSONObject>) result.get(Article.ARTICLES);
         dataModel.put(Common.QNA,qaArticles);
 
+        final int recentFetchSize = 18;
+
         // 最近文章
-        final List<JSONObject> recentArticles = articleQueryService.getIndexRecentArticles(18, 1);
+        final List<JSONObject> recentArticles = articleQueryService.getIndexRecentArticles(recentFetchSize, 1);
         dataModel.put(Common.RECENT_ARTICLES, recentArticles);
 
         // 最近文章第二列
-        final List<JSONObject> recentArticles2 = articleQueryService.getIndexRecentArticles(18, 2);
+        final List<JSONObject> recentArticles2 = articleQueryService.getIndexRecentArticles(recentFetchSize, 2);
         dataModel.put("recentArticles2", recentArticles2);
 
-        // 长篇文章专区
-        final List<JSONObject> longArticles = articleQueryService.getIndexLongArticles(10);
-        dataModel.put("longArticles", longArticles);
+        // 右侧排行补偿行数（由首页置顶导致的额外文章行数决定）
+        final int maxRecentColumnRows = Math.max(recentArticles.size(), recentArticles2.size());
+        final int rankCompensateRows = Math.max(0, maxRecentColumnRows - recentFetchSize);
+        // 文章行高约 40px，排行行高约 34px，先换算为“右栏总补偿行数”后再分摊到两个排行，避免双倍补偿
+        final int totalRankExtraRows = (int) Math.round((double) rankCompensateRows * 40 / 34);
+        final int checkinExtraRows = (totalRankExtraRows + 1) / 2;
+        final int onlineExtraRows = totalRankExtraRows / 2;
+        final int checkinVisibleCount = 9 + checkinExtraRows;
+        final int onlineVisibleCount = 8 + onlineExtraRows;
+        dataModel.put("rankCompensateRows", rankCompensateRows);
+        dataModel.put("checkinVisibleCount", checkinVisibleCount);
+        dataModel.put("onlineVisibleCount", onlineVisibleCount);
+
+        // 签到排行
+        final List<JSONObject> users = activityQueryService.getTopCheckinUsers(checkinVisibleCount);
+        dataModel.put(Common.TOP_CHECKIN_USERS, users);
+
+        // 在线时间排行
+        final List<JSONObject> onlineTopUsers = activityQueryService.getTopOnlineTimeUsers(onlineVisibleCount);
+        dataModel.put("onlineTopUsers", onlineTopUsers);
+
+        final List<JSONObject> latestLongColumns = longArticleColumnQueryService.getLatestColumns(
+                HOME_LONG_COLUMN_FETCH_SIZE);
+        dataModel.put("latestLongColumns", latestLongColumns);
+
+        final Set<String> latestLongColumnIds = collectLongColumnIds(latestLongColumns);
+        List<JSONObject> hotLongColumns = longArticleColumnQueryService.getHotColumns(
+                HOME_LONG_COLUMN_FETCH_SIZE,
+                latestLongColumnIds,
+                HOME_LONG_HOT_COLUMN_SCAN_SIZE);
+        if (hotLongColumns.size() < HOME_LONG_HOT_MIN_UNIQUE_SIZE) {
+            hotLongColumns = longArticleColumnQueryService.getHotColumns(HOME_LONG_COLUMN_FETCH_SIZE);
+        }
+        dataModel.put("hotLongColumns", hotLongColumns);
 
         // 最近文章（移动端）
         final List<JSONObject> recentArticlesMobile = articleQueryService.getIndexRecentArticles(15, 1);
@@ -541,6 +577,25 @@ public class IndexProcessor {
         LOGGER.log(Level.INFO, "Refreshed index model cache.");
     }
 
+    private Set<String> collectLongColumnIds(final List<JSONObject> columns) {
+        final Set<String> ret = new LinkedHashSet<>();
+        for (final JSONObject column : columns) {
+            final String columnId = getLongColumnId(column);
+            if (StringUtils.isNotBlank(columnId)) {
+                ret.add(columnId);
+            }
+        }
+        return ret;
+    }
+
+    private String getLongColumnId(final JSONObject column) {
+        final String columnId = column.optString(LongArticleColumn.COLUMN_ID);
+        if (StringUtils.isNotBlank(columnId)) {
+            return columnId;
+        }
+        return column.optString(Keys.OBJECT_ID);
+    }
+
     public synchronized void makeIndexData(Map<String, Object> dataModel) {
         if (indexModelCache.isEmpty()) {
             loadIndexData();
@@ -558,10 +613,12 @@ public class IndexProcessor {
         final AbstractFreeMarkerRenderer renderer = new SkinRenderer(context, "index.ftl");
         final Map<String, Object> dataModel = renderer.getDataModel();
         final JSONObject currentUser = Sessions.getUser();
+        String currentUserId = null;
         if (null != currentUser) {
             dataModel.put(UserExt.CHAT_ROOM_PICTURE_STATUS, currentUser.optInt(UserExt.CHAT_ROOM_PICTURE_STATUS));
             // 是否领取过昨日奖励
             final String userId = currentUser.optString(Keys.OBJECT_ID);
+            currentUserId = userId;
             dataModel.put("collectedYesterdayLivenessReward",
                     (
                             // 没领取过，返回true
@@ -595,6 +652,12 @@ public class IndexProcessor {
         }
 
         makeIndexData(dataModel);
+
+        if (StringUtils.isNotBlank(currentUserId)) {
+            dataModel.put("longColumnRecentReadHistory", longArticleColumnQueryService.getRecentReadHistory(currentUserId, 12));
+        } else {
+            dataModel.put("longColumnRecentReadHistory", Collections.emptyList());
+        }
 
         dataModelService.fillHeaderAndFooter(context, dataModel);
 
@@ -727,7 +790,74 @@ public class IndexProcessor {
 
         dataModel.put("stickArticles", Collections.emptyList());
         dataModel.put(Common.SELECTED, "long");
-        dataModel.put(Common.CURRENT, "long");
+        // 其他 recent* 页面 current 值形如 "/hot"、"/good"，保持一致以生成正确分页链接
+        dataModel.put(Common.CURRENT, "/long");
+    }
+
+    /**
+     * Shows long article column recommendation page.
+     *
+     * @param context the specified context
+     */
+    public void showLongArticleColumns(final RequestContext context) {
+        final AbstractFreeMarkerRenderer renderer = new SkinRenderer(context, "long-columns.ftl");
+        final Map<String, Object> dataModel = renderer.getDataModel();
+
+        dataModel.put("latestLongColumns", longArticleColumnQueryService.getLatestColumns(30));
+        dataModel.put("hotLongColumns", longArticleColumnQueryService.getHotColumns(30));
+
+        final JSONObject currentUser = Sessions.getUser();
+        if (null != currentUser) {
+            dataModel.put("longColumnRecentReadHistory",
+                    longArticleColumnQueryService.getRecentReadHistory(currentUser.optString(Keys.OBJECT_ID), 20));
+        } else {
+            dataModel.put("longColumnRecentReadHistory", Collections.emptyList());
+        }
+
+        dataModelService.fillHeaderAndFooter(context, dataModel);
+        dataModelService.fillRandomArticles(dataModel);
+        dataModelService.fillSideHotArticles(dataModel);
+        dataModelService.fillSideTags(dataModel);
+        dataModelService.fillLatestCmts(dataModel);
+
+        dataModel.put(Common.SELECTED, "column");
+    }
+
+    /**
+     * Shows long article column page.
+     *
+     * @param context the specified context
+     */
+    public void showLongArticleColumn(final RequestContext context) {
+        final String columnId = context.pathVar("columnId");
+        final JSONObject columnView = longArticleColumnQueryService.getColumnViewById(columnId);
+        if (null == columnView) {
+            context.sendError(404);
+            return;
+        }
+
+        final AbstractFreeMarkerRenderer renderer = new SkinRenderer(context, "long-column.ftl");
+        final Map<String, Object> dataModel = renderer.getDataModel();
+        dataModel.put("longColumn", columnView.optJSONObject("column"));
+        dataModel.put("longColumnChapters", columnView.opt("chapters"));
+        dataModel.put("latestLongColumns", longArticleColumnQueryService.getLatestColumns(12));
+        dataModel.put("hotLongColumns", longArticleColumnQueryService.getHotColumns(12));
+
+        final JSONObject currentUser = Sessions.getUser();
+        if (null != currentUser) {
+            dataModel.put("longColumnRecentReadHistory",
+                    longArticleColumnQueryService.getRecentReadHistory(currentUser.optString(Keys.OBJECT_ID), 12));
+        } else {
+            dataModel.put("longColumnRecentReadHistory", Collections.emptyList());
+        }
+
+        dataModelService.fillHeaderAndFooter(context, dataModel);
+        dataModelService.fillRandomArticles(dataModel);
+        dataModelService.fillSideHotArticles(dataModel);
+        dataModelService.fillSideTags(dataModel);
+        dataModelService.fillLatestCmts(dataModel);
+
+        dataModel.put(Common.SELECTED, "column");
     }
 
     /**

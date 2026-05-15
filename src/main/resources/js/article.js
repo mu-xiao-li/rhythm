@@ -20,9 +20,7 @@
  * @fileoverview article page and add comment.
  *
  * @author <a href="http://vanessa.b3log.org">Liyuan Li</a>
- * @author <a href="http://88250.b3log.org">Liang Ding</a>
- * @version 1.43.0.3, Apr 30, 2020
- */
+ * @author <a href="http://88250.b3log.org">Liang Ding</a> */
 
 function isLetterOrDigit(ch) {
     return /\p{L}|\p{N}/u.test(ch);
@@ -64,6 +62,312 @@ function normalizeHeadingIdFromString(rawId, caretChar) {
  */
 var Comment = {
   editor: undefined,
+  reactionOptions: [
+    {value: 'thumbsup', emoji: '👍'},
+    {value: 'thumbsdown', emoji: '👎'},
+    {value: 'check', emoji: '✅'},
+    {value: 'cross', emoji: '❌'},
+    {value: 'star', emoji: '⭐'},
+    {value: 'heart', emoji: '❤️'},
+    {value: 'fire', emoji: '🔥'},
+    {value: 'party', emoji: '🎉'},
+    {value: 'laugh', emoji: '😂'},
+    {value: 'wow', emoji: '😮'},
+    {value: 'clap', emoji: '👏'},
+    {value: 'hundred', emoji: '💯'},
+    {value: 'rocket', emoji: '🚀'},
+    {value: 'salute', emoji: '🖖'},
+    {value: 'handshake', emoji: '🤝'},
+    {value: 'raisedhands', emoji: '🙌'},
+    {value: 'mindblown', emoji: '🤯'},
+    {value: 'thinking', emoji: '🤔'},
+    {value: 'eyes', emoji: '👀'},
+    {value: 'cry', emoji: '😢'},
+    {value: 'angry', emoji: '😡'},
+    {value: 'pray', emoji: '🙏'},
+    {value: 'brokenheart', emoji: '💔'},
+    {value: 'skull', emoji: '💀'},
+    {value: 'clown', emoji: '🤡'},
+    {value: 'poop', emoji: '💩'},
+    {value: 'heartonfire', emoji: '❤️‍🔥'},
+    {value: 'plus', emoji: '➕1️⃣'},
+  ],
+  isWideReactionOption: function (option) {
+    return option.value === 'plus' || option.value === 'heartonfire'
+  },
+  normalizeReactionSummary: function (summary) {
+    if (Array.isArray(summary)) {
+      return summary
+    }
+    if (typeof summary !== 'string' || summary === '') {
+      return []
+    }
+    try {
+      var parsed = JSON.parse(summary)
+      return Array.isArray(parsed) ? parsed : []
+    } catch (e) {
+      return []
+    }
+  },
+  getReactionMap: function (summary) {
+    summary = Comment.normalizeReactionSummary(summary)
+    var map = {}
+    for (var i = 0; i < summary.length; i++) {
+      map[summary[i].value] = summary[i]
+    }
+    return map
+  },
+  escapeReactionHtml: function (value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+  },
+  getReactionUserDetails: function (item) {
+    if (!item || !Array.isArray(item.userDetails)) {
+      return []
+    }
+    return item.userDetails
+  },
+  renderReactionTip: function (item) {
+    var users = Comment.getReactionUserDetails(item)
+    if (users.length === 0) {
+      return ''
+    }
+    var html = []
+    for (var i = 0; i < users.length; i++) {
+      var user = users[i] || {}
+      var userName = user.userName || ''
+      var avatarURL = user.avatarURL || ''
+      if (userName === '' || avatarURL === '') {
+        continue
+      }
+      var displayName = user.displayName || userName
+      html.push('<a class="reaction-pill__tip-link" href="', Label.servePath, '/member/',
+        encodeURIComponent(userName), '" aria-label="', Comment.escapeReactionHtml(displayName),
+        '" title="', Comment.escapeReactionHtml(displayName), '">')
+      html.push('<img class="reaction-pill__tip-avatar" src="', Comment.escapeReactionHtml(avatarURL),
+        '" alt="', Comment.escapeReactionHtml(displayName), '">')
+      html.push('</a>')
+    }
+    if (html.length === 0) {
+      return ''
+    }
+    return '<span class="reaction-pill__tip tip-text">' + html.join('') + '</span>'
+  },
+  renderReactionSummaryItems: function (id, summary, currentUserReaction) {
+    var map = Comment.getReactionMap(summary)
+    var html = []
+    for (var i = 0; i < Comment.reactionOptions.length; i++) {
+      var option = Comment.reactionOptions[i]
+      var item = map[option.value] || {}
+      var count = item.count || 0
+      if (count < 1) {
+        continue
+      }
+      var selected = currentUserReaction === option.value ? ' selected' : ''
+      var tipHtml = Comment.renderReactionTip(item)
+      if (tipHtml !== '') {
+        html.push('<span class="reaction-pill-wrapper tip-wrapper">')
+      }
+      html.push('<button type="button" class="reaction-pill reaction-pill--summary', selected,
+        '" data-reaction-value="', option.value, '"')
+      html.push(' onclick="Comment.react(\'', id, '\', \'', option.value, '\', this)">')
+      html.push('<span class="reaction-pill__emoji">', option.emoji, '</span>')
+      html.push('<span class="reaction-pill__count">', count, '</span>')
+      html.push('</button>')
+      if (tipHtml !== '') {
+        html.push(tipHtml, '</span>')
+      }
+    }
+    return html.join('')
+  },
+  renderReactionPanel: function (id, currentUserReaction) {
+    var html = ['<div class="reaction-popover">']
+    for (var i = 0; i < Comment.reactionOptions.length; i++) {
+      var option = Comment.reactionOptions[i]
+      var wideClass = Comment.isWideReactionOption(option) ? ' reaction-option--wide' : ''
+      var selected = currentUserReaction === option.value ? ' selected' : ''
+      html.push('<button type="button" class="reaction-option', wideClass, selected,
+        '" onclick="Comment.react(\'', id, '\', \'', option.value, '\', this)">')
+      html.push('<span class="reaction-option__emoji">', option.emoji, '</span>')
+      html.push('</button>')
+    }
+    html.push('</div>')
+    return html.join('')
+  },
+  renderReactionSummaryWidget: function (id, summary, currentUserReaction) {
+    var summaryHtml = Comment.renderReactionSummaryItems(id, summary, currentUserReaction)
+    var html = ['<div class="comment-reaction comment-reaction--summary" data-target-id="', id,
+      '" data-current-user-reaction="', currentUserReaction || '', '">']
+    html.push('<div class="reaction-widget__summary">')
+    html.push('<div class="reaction-widget__items">', summaryHtml, '</div></div></div>')
+    return html.join('')
+  },
+  renderReactionTriggerWidget: function (id, currentUserReaction, isOpen) {
+    var openClass = isOpen ? ' is-open' : ''
+    var html = ['<div class="comment-reaction comment-reaction--trigger', openClass,
+      '" data-target-id="', id, '" data-current-user-reaction="', currentUserReaction || '', '">']
+    html.push('<button type="button" class="reaction-trigger', openClass,
+      '" aria-label="添加反应" onclick="Comment.toggleReactionPanel(this)">')
+    html.push('<span class="reaction-trigger__icon">🙂</span>')
+    html.push('</button>')
+    html.push(Comment.renderReactionPanel(id, currentUserReaction))
+    html.push('</div>')
+    return html.join('')
+  },
+  renderReactionBar: function (id, summary, currentUserReaction, isOpen, mode) {
+    if (mode === 'summary') {
+      return Comment.renderReactionSummaryWidget(id, summary, currentUserReaction)
+    }
+    if (mode === 'trigger') {
+      return Comment.renderReactionTriggerWidget(id, currentUserReaction, isOpen)
+    }
+    var openClass = isOpen ? ' is-open' : ''
+    var summaryHtml = Comment.renderReactionSummaryItems(id, summary, currentUserReaction)
+    var html = ['<div class="comment-reaction comment-reaction--combined', openClass, '" data-target-id="', id,
+      '" data-current-user-reaction="', currentUserReaction || '', '">']
+    html.push('<div class="reaction-widget__summary">')
+    html.push('<div class="reaction-widget__items">', summaryHtml, '</div>')
+    html.push('<button type="button" class="reaction-trigger', openClass,
+      '" aria-label="添加反应" onclick="Comment.toggleReactionPanel(this)">')
+    html.push('<span class="reaction-trigger__icon">🙂</span>')
+    html.push('</button></div>')
+    html.push(Comment.renderReactionPanel(id, currentUserReaction))
+    html.push('</div>')
+    return html.join('')
+  },
+  getReactionWidgets: function (targetId) {
+    return $('.comment-reaction[data-target-id="' + targetId + '"]')
+  },
+  getInteractiveReactionWidgets: function (targetId) {
+    return $('.comment-reaction--combined[data-target-id="' + targetId + '"], ' +
+      '.comment-reaction--trigger[data-target-id="' + targetId + '"]')
+  },
+  mountReactionTrigger: function ($actionBtns, targetId, currentUserReaction, isOpen) {
+    if ($actionBtns.length === 0) {
+      return
+    }
+    var html = Comment.renderReactionBar(targetId, [], currentUserReaction, isOpen, 'trigger')
+    var $trigger = $actionBtns.find('.comment-reaction--trigger[data-target-id="' + targetId + '"]')
+    if ($trigger.length > 0) {
+      $trigger.replaceWith(html)
+      return
+    }
+    $actionBtns.prepend(html)
+  },
+  collectReactionShells: function (context) {
+    var $context = context ? $(context) : $(document)
+    if ($context.hasClass('comment-reaction-shell')) {
+      return $context.add($context.find('.comment-reaction-shell'))
+    }
+    return $context.find('.comment-reaction-shell')
+  },
+  initReactionWidgets: function (context) {
+    Comment.collectReactionShells(context).each(function () {
+      var $shell = $(this)
+      var targetId = $shell.attr('data-target-id')
+      var summary = $shell.attr('data-summary')
+      var currentUserReaction = $shell.attr('data-current-user-reaction') || ''
+      var $actionBtns = $shell.closest('.comment-action__bar').find('.action-btns').first()
+      var useActionButtons = $shell.closest('.comment-action__left').length > 0 &&
+        $actionBtns.length > 0
+      var html = Comment.renderReactionBar(targetId, summary, currentUserReaction, false,
+        useActionButtons ? 'summary' : 'combined')
+      $shell.replaceWith(html)
+      if (useActionButtons) {
+        Comment.mountReactionTrigger($actionBtns, targetId, currentUserReaction, false)
+      }
+    })
+  },
+  closeReactionPanels: function (context) {
+    var $context = context ? $(context) : $(document)
+    var selector = '.comment-reaction--combined, .comment-reaction--trigger'
+    var $widgets = $context.is(selector)
+      ? $context.add($context.find(selector))
+      : $context.find(selector)
+    $widgets.removeClass('is-open')
+  },
+  toggleReactionPanel: function (it) {
+    var $widget = $(it).closest('.comment-reaction')
+    var targetId = $widget.attr('data-target-id')
+    var willOpen = !$widget.hasClass('is-open')
+    Comment.closeReactionPanels()
+    if (willOpen) {
+      Comment.getInteractiveReactionWidgets(targetId).addClass('is-open')
+    }
+  },
+  bindReactionPanels: function () {
+    $(document).off('click.commentReaction').on('click.commentReaction', function (event) {
+      if ($(event.target).closest('.comment-reaction').length === 0) {
+        Comment.closeReactionPanels()
+      }
+    })
+  },
+  updateReactionBars: function (targetId, summary, currentUserReaction, forceOpen) {
+    var $bars = Comment.getReactionWidgets(targetId)
+    var willOpen = typeof forceOpen === 'boolean'
+      ? forceOpen
+      : Comment.getInteractiveReactionWidgets(targetId).first().hasClass('is-open')
+    $bars.each(function () {
+      var $bar = $(this)
+      var mode = 'combined'
+      if ($bar.hasClass('comment-reaction--summary')) {
+        mode = 'summary'
+      } else if ($bar.hasClass('comment-reaction--trigger')) {
+        mode = 'trigger'
+      }
+      $bar.replaceWith(Comment.renderReactionBar(targetId, summary, currentUserReaction, willOpen, mode))
+    })
+  },
+  updateReactionFromChannel: function (data) {
+    var targetId = data.targetId || data.commentId
+    if (!targetId) {
+      return
+    }
+    var $bars = Comment.getReactionWidgets(targetId)
+    if ($bars.length === 0) {
+      return
+    }
+    var currentUserReaction = data.actorUserId === Label.currentUserId
+      ? (data.actorReaction || '')
+      : ($bars.first().attr('data-current-user-reaction') || '')
+    Comment.updateReactionBars(targetId, data.summary || [], currentUserReaction, false)
+  },
+  react: function (id, value, it) {
+    if (!Label.isLoggedIn) {
+      Util.needLogin()
+      return false
+    }
+    var $bar = $(it).closest('.comment-reaction')
+    if ($bar.attr('data-loading') === 'true') {
+      return false
+    }
+    $.ajax({
+      url: Label.servePath + '/comment/reaction',
+      type: 'POST',
+      data: JSON.stringify({commentId: id, groupType: 'emoji', value: value}),
+      beforeSend: function () {
+        $bar.attr('data-loading', 'true').addClass('reaction-loading')
+      },
+      success: function (result) {
+        if (0 !== result.code) {
+          Util.alert(result.msg)
+          return
+        }
+        Comment.updateReactionBars(result.data.targetId, result.data.summary,
+          result.data.currentUserReaction, false)
+      },
+      error: function (result) {
+        Util.alert(result.statusText)
+      },
+      complete: function () {
+        $bar.removeAttr('data-loading').removeClass('reaction-loading')
+      },
+    })
+  },
   /**
    * 举报
    * @param it
@@ -662,6 +966,7 @@ var Comment = {
       storage: true,
       titleSuffix: '',
       callback: function () {
+        Comment.initReactionWidgets($('#comments'))
         Util.parseMarkdown()
         Util.parseHljs()
         Util.listenUserCard()
@@ -674,6 +979,10 @@ var Comment = {
     $('#comments').bind('pjax.end', function () {
       NProgress.done()
     })
+    ArticleReaction.bindPanels()
+    ArticleReaction.initWidgets()
+    Comment.bindReactionPanels()
+    Comment.initReactionWidgets($('#comments'))
 
     if (!Label.isLoggedIn || !document.getElementById('commentContent')) {
       return false
@@ -867,7 +1176,10 @@ var Comment = {
             + '&m=' + Label.userCommentViewMode + '#' + data.oId
             +
             '\')"><svg><use xlink:href="#quote"></use></svg></a></div><div class="vditor-reset comment">'
-            + data.commentContent + '</div></div></div></li>'
+            + data.commentContent + '</div>'
+            + Comment.renderReactionBar(data.oId, data.reactionSummary,
+              data.currentUserReaction)
+            + '</div></div></li>'
         }
         $commentReplies.html('<ul>' + template + '</ul>')
         Util.parseHljs()
@@ -1014,6 +1326,173 @@ var Comment = {
     }
 
     $('#replyUseName').html(replyUserHTML).data('commentOriginalCommentId', id)
+  },
+}
+
+var ArticleReaction = {
+  renderSummaryItems: function (id, summary, currentUserReaction) {
+    var map = Comment.getReactionMap(summary)
+    var html = []
+    for (var i = 0; i < Comment.reactionOptions.length; i++) {
+      var option = Comment.reactionOptions[i]
+      var item = map[option.value] || {}
+      var count = item.count || 0
+      if (count < 1) {
+        continue
+      }
+      var selected = currentUserReaction === option.value ? ' selected' : ''
+      var tipHtml = Comment.renderReactionTip(item)
+      if (tipHtml !== '') {
+        html.push('<span class="reaction-pill-wrapper tip-wrapper">')
+      }
+      html.push('<button type="button" class="reaction-pill reaction-pill--summary', selected,
+        '" data-reaction-value="', option.value, '"')
+      html.push(' onclick="ArticleReaction.react(\'', id, '\', \'', option.value, '\', this)">')
+      html.push('<span class="reaction-pill__emoji">', option.emoji, '</span>')
+      html.push('<span class="reaction-pill__count">', count, '</span>')
+      html.push('</button>')
+      if (tipHtml !== '') {
+        html.push(tipHtml, '</span>')
+      }
+    }
+    return html.join('')
+  },
+  renderPanel: function (id, currentUserReaction) {
+    var html = ['<div class="reaction-popover">']
+    for (var i = 0; i < Comment.reactionOptions.length; i++) {
+      var option = Comment.reactionOptions[i]
+      var wideClass = Comment.isWideReactionOption(option) ? ' reaction-option--wide' : ''
+      var selected = currentUserReaction === option.value ? ' selected' : ''
+      html.push('<button type="button" class="reaction-option', wideClass, selected,
+        '" onclick="ArticleReaction.react(\'', id, '\', \'', option.value, '\', this)">')
+      html.push('<span class="reaction-option__emoji">', option.emoji, '</span>')
+      html.push('</button>')
+    }
+    html.push('</div>')
+    return html.join('')
+  },
+  renderBar: function (id, summary, currentUserReaction, isOpen) {
+    var openClass = isOpen ? ' is-open' : ''
+    var html = ['<div class="article-reaction', openClass, '" data-target-id="', id,
+      '" data-current-user-reaction="', currentUserReaction || '', '">']
+    html.push('<div class="reaction-widget__summary">')
+    html.push('<div class="reaction-widget__items">',
+      ArticleReaction.renderSummaryItems(id, summary, currentUserReaction), '</div>')
+    html.push('<button type="button" class="reaction-trigger', openClass,
+      '" aria-label="添加反应" onclick="ArticleReaction.togglePanel(this)">')
+    html.push('<span class="reaction-trigger__icon">🙂</span>')
+    html.push('</button></div>')
+    html.push(ArticleReaction.renderPanel(id, currentUserReaction))
+    html.push('</div>')
+    return html.join('')
+  },
+  collectShells: function (context) {
+    var $context = context ? $(context) : $(document)
+    if ($context.hasClass('article-reaction-shell')) {
+      return $context.add($context.find('.article-reaction-shell'))
+    }
+    return $context.find('.article-reaction-shell')
+  },
+  ensureShell: function () {
+    if ($('.article-reaction-shell, .article-reaction').length > 0 || !Label.articleOId) {
+      return
+    }
+    var $anchor = $('.article-main .tag-desc').first().closest('.fn-flex')
+    if ($anchor.length === 0) {
+      $anchor = $('.article-main .article-actions.action-btns').first()
+    }
+    if ($anchor.length === 0) {
+      return
+    }
+    $('<div class="article-reaction-shell" data-target-id="' + Label.articleOId +
+      '" data-current-user-reaction="" data-summary="[]"></div>').insertAfter($anchor)
+  },
+  getWidgets: function (targetId) {
+    return $('.article-reaction[data-target-id="' + targetId + '"]')
+  },
+  initWidgets: function (context) {
+    if (!context) {
+      ArticleReaction.ensureShell()
+    }
+    ArticleReaction.collectShells(context).each(function () {
+      var $shell = $(this)
+      $shell.replaceWith(ArticleReaction.renderBar(
+        $shell.attr('data-target-id'),
+        $shell.attr('data-summary'),
+        $shell.attr('data-current-user-reaction') || '',
+        false
+      ))
+    })
+  },
+  closePanels: function () {
+    $('.article-reaction.is-open').removeClass('is-open')
+  },
+  togglePanel: function (it) {
+    var $widget = $(it).closest('.article-reaction')
+    var willOpen = !$widget.hasClass('is-open')
+    ArticleReaction.closePanels()
+    if (willOpen) {
+      $widget.addClass('is-open')
+    }
+  },
+  bindPanels: function () {
+    $(document).off('click.articleReaction').on('click.articleReaction', function (event) {
+      if ($(event.target).closest('.article-reaction').length === 0) {
+        ArticleReaction.closePanels()
+      }
+    })
+  },
+  updateBars: function (targetId, summary, currentUserReaction, forceOpen) {
+    var $bars = ArticleReaction.getWidgets(targetId)
+    var willOpen = typeof forceOpen === 'boolean'
+      ? forceOpen
+      : $bars.first().hasClass('is-open')
+    $bars.each(function () {
+      $(this).replaceWith(ArticleReaction.renderBar(targetId, summary, currentUserReaction, willOpen))
+    })
+  },
+  updateReactionFromChannel: function (data) {
+    var targetId = data.targetId
+    var $bars = ArticleReaction.getWidgets(targetId)
+    if (!targetId || $bars.length === 0) {
+      return
+    }
+    var currentUserReaction = data.actorUserId === Label.currentUserId
+      ? (data.actorReaction || '')
+      : ($bars.first().attr('data-current-user-reaction') || '')
+    ArticleReaction.updateBars(targetId, data.summary || [], currentUserReaction, false)
+  },
+  react: function (id, value, it) {
+    if (!Label.isLoggedIn) {
+      Util.needLogin()
+      return false
+    }
+    var $bar = $(it).closest('.article-reaction')
+    if ($bar.attr('data-loading') === 'true') {
+      return false
+    }
+    $.ajax({
+      url: Label.servePath + '/article/reaction',
+      type: 'POST',
+      data: JSON.stringify({articleId: id, groupType: 'emoji', value: value}),
+      beforeSend: function () {
+        $bar.attr('data-loading', 'true').addClass('reaction-loading')
+      },
+      success: function (result) {
+        if (0 !== result.code) {
+          Util.alert(result.msg)
+          return
+        }
+        ArticleReaction.updateBars(result.data.targetId, result.data.summary,
+          result.data.currentUserReaction, false)
+      },
+      error: function (result) {
+        Util.alert(result.statusText)
+      },
+      complete: function () {
+        $bar.removeAttr('data-loading').removeClass('reaction-loading')
+      },
+    })
   },
 }
 
@@ -1247,15 +1726,6 @@ var Article = {
       $('#articltVia').text('via ' + name)
     }
 
-    // his
-    $('#revision').dialog({
-      'width': Math.min($(window).width() - 50, 1000, $(window).width() * 0.8),
-      // 'width': $(window).width() > 500 ? 500 : $(window).width() - 50,
-      'height': $(window).height() - 50,
-      'modal': true,
-      'hideFooter': true,
-    })
-
     // report
     $('#reportDialog').dialog({
       'width': $(window).width() > 500 ? 500 : $(window).width() - 50,
@@ -1384,9 +1854,72 @@ var Article = {
       Util.needLogin()
       return false
     }
+
     if (!type) {
       type = 'article'
     }
+
+    Article._revisionDialogOpen(type === 'comment' ? '评论历史' : '文章历史')
+    if (type === 'comment') {
+      Article._legacyRevision(id, type)
+    } else {
+      Article._articleRevision(id)
+    }
+  },
+  /**
+   * 初始化历史版本专用弹窗
+   * @returns {undefined}
+   */
+  _revisionDialogInit: function () {
+    if ($('#revisionDialog').length > 0) {
+      return
+    }
+
+    $('body').append('<div class="revision-modal" id="revisionDialog" aria-hidden="true">' +
+      '<div class="revision-modal__overlay"></div>' +
+      '<section class="revision-modal__panel" role="dialog" aria-modal="true" aria-labelledby="revisionDialogTitle">' +
+      '<header class="revision-modal__header">' +
+      '<div class="revision-modal__title" id="revisionDialogTitle"></div>' +
+      '<button class="revision-modal__close" type="button" aria-label="关闭"><span aria-hidden="true">&times;</span></button>' +
+      '</header><div class="revision-modal__body"></div></section></div>')
+    $('#revisionDialog .revision-modal__body').append($('#revision'))
+    $('#revisionDialog .revision-modal__overlay, #revisionDialog .revision-modal__close').
+      click(function () {
+        Article._revisionDialogClose()
+      })
+    $(document).off('keydown.revisionDialog').on('keydown.revisionDialog', function (event) {
+      if (event.key === 'Escape' && $('#revisionDialog').hasClass('is-open')) {
+        Article._revisionDialogClose()
+      }
+    })
+  },
+  /**
+   * 打开历史版本专用弹窗
+   * @param {string} title 标题
+   * @returns {undefined}
+   */
+  _revisionDialogOpen: function (title) {
+    Article._revisionDialogInit()
+    $('#revisionDialogTitle').text(title || '历史版本')
+    $('#revisionDialog').addClass('is-open').attr('aria-hidden', 'false')
+    $('body').addClass('revision-modal-open')
+    $('#revisionDialog .revision-modal__close').focus()
+  },
+  /**
+   * 关闭历史版本专用弹窗
+   * @returns {undefined}
+   */
+  _revisionDialogClose: function () {
+    $('#revisionDialog').removeClass('is-open').attr('aria-hidden', 'true')
+    $('body').removeClass('revision-modal-open')
+  },
+  /**
+   * 旧版评论历史对比
+   * @param {string} id 评论 id
+   * @param {string} type 类型
+   * @returns {undefined}
+   */
+  _legacyRevision: function (id, type) {
 
     $.ajax({
       url: Label.servePath + '/' + type + '/' + id + '/revisions',
@@ -1443,7 +1976,6 @@ var Article = {
         Util.alert(result.msg)
       },
     })
-    $('#revision').dialog('open')
   },
   /**
    * 上一版本，下一版本对比
@@ -1523,6 +2055,267 @@ var Article = {
         synchronisedScroll: true,
       })
     })
+  },
+  /**
+   * 文章历史版本对比
+   * @param {string} id 文章 id
+   * @returns {undefined}
+   */
+  _articleRevision: function (id) {
+    $('#revision > .revisions').remove()
+    $('#revisions').
+      removeData('revisions').
+      removeData('revisionDetails').
+      html('<b>加载中</b>')
+    $.ajax({
+      url: Label.servePath + '/article/' + id + '/revisions/list',
+      cache: false,
+      success: function (result) {
+        if (result.code !== 0) {
+          $('#revisions').html('<b>' +
+            Article._revisionEscapeHTML(result.msg || '加载失败') + '</b>')
+          return
+        }
+
+        var revisions = result.revisions || []
+        if (revisions.length < 2) {
+          $('#revisions').html('<b>' + Label.noRevisionLabel + '</b>')
+          return
+        }
+
+        $('#revisions').
+          data('revisions', revisions).
+          data('revisionDetails', {}).
+          html(Article._revisionPickerHtml(revisions))
+        Article._revisionBindPicker(id)
+        Article._revisionCompare(id)
+      },
+      error: function () {
+        $('#revisions').html('<b>加载失败</b>')
+      },
+    })
+  },
+  /**
+   * 构建版本选择器
+   * @param {Array} revisions 版本列表
+   * @returns {string} HTML
+   */
+  _revisionPickerHtml: function (revisions) {
+    var fromIndex = revisions.length - 2
+    var toIndex = revisions.length - 1
+    var fromOptions = ''
+    var toOptions = ''
+    for (var i = 0; i < revisions.length; i++) {
+      fromOptions += Article._revisionOptionHtml(revisions[i], i === fromIndex)
+      toOptions += Article._revisionOptionHtml(revisions[i], i === toIndex)
+    }
+
+    return '<div class="revision-picker">' +
+      '<label>原版本<select class="revision-picker__base">' + fromOptions + '</select></label>' +
+      '<label>新版本<select class="revision-picker__target">' + toOptions + '</select></label>' +
+      '<label class="revision-picker__toggle"><input class="revision-picker__diff-only" type="checkbox" checked>只看差异</label>' +
+      '<button class="green revision-picker__compare">对比</button>' +
+      '</div><div class="revision-diff"></div>'
+  },
+  /**
+   * 构建版本下拉项
+   * @param {Object} revision 版本元数据
+   * @param {boolean} selected 是否选中
+   * @returns {string} HTML
+   */
+  _revisionOptionHtml: function (revision, selected) {
+    return '<option value="' + Article._revisionEscapeHTML(revision.revisionId) + '"' +
+      (selected ? ' selected' : '') + '>' +
+      Article._revisionEscapeHTML(Article._revisionVersionLabel(revision)) +
+      '</option>'
+  },
+  /**
+   * 版本显示名
+   * @param {Object} revision 版本元数据
+   * @returns {string} 显示名
+   */
+  _revisionVersionLabel: function (revision) {
+    if (revision.current) {
+      return '当前 ' + revision.revisionTimeStr
+    }
+    return revision.revisionTimeStr
+  },
+  /**
+   * 绑定版本选择器
+   * @param {string} id 文章 id
+   * @returns {undefined}
+   */
+  _revisionBindPicker: function (id) {
+    $('#revision .revision-picker__compare').click(function () {
+      Article._revisionCompare(id)
+    })
+    $('#revision .revision-picker__diff-only').change(function () {
+      Article._revisionCompare(id)
+    })
+  },
+  /**
+   * revisionCompare: 对比两个选中版本
+   * @param {string} id 文章 id
+   * @returns {undefined}
+   */
+  _revisionCompare: function (id) {
+    var baseId = $('#revision .revision-picker__base').val()
+    var targetId = $('#revision .revision-picker__target').val()
+    var onlyDiff = $('#revision .revision-picker__diff-only').is(':checked')
+    $('#revisions .revision-diff').html('<b>加载中</b>')
+
+    $.when(Article._revisionFetch(id, baseId), Article._revisionFetch(id, targetId)).
+      done(function (baseRevision, targetRevision) {
+        Article._revisionRenderCompare(baseRevision, targetRevision, onlyDiff)
+      }).
+      fail(function (msg) {
+        $('#revisions .revision-diff').html('<b>' +
+          Article._revisionEscapeHTML(msg || '加载失败') + '</b>')
+      })
+  },
+  /**
+   * 获取单个版本
+   * @param {string} id 文章 id
+   * @param {string} revisionId 版本 id
+   * @returns {Object} jQuery Promise
+   */
+  _revisionFetch: function (id, revisionId) {
+    var cache = $('#revisions').data('revisionDetails') || {}
+    var deferred = $.Deferred()
+    if (cache[revisionId]) {
+      deferred.resolve(cache[revisionId])
+      return deferred.promise()
+    }
+
+    $.ajax({
+      url: Label.servePath + '/article/' + id + '/revisions/' + encodeURIComponent(revisionId),
+      cache: false,
+      success: function (result) {
+        if (result.code !== 0) {
+          deferred.reject(result.msg)
+          return
+        }
+        cache[revisionId] = result.revision
+        $('#revisions').data('revisionDetails', cache)
+        deferred.resolve(result.revision)
+      },
+      error: function () {
+        deferred.reject('加载失败')
+      },
+    })
+    return deferred.promise()
+  },
+  /**
+   * 渲染两个版本的差异
+   * @param {Object} baseRevision 原版本
+   * @param {Object} targetRevision 新版本
+   * @param {boolean} onlyDiff 是否只看差异
+   * @returns {undefined}
+   */
+  _revisionRenderCompare: function (baseRevision, targetRevision, onlyDiff) {
+    var baseData = baseRevision.revisionData || {}
+    var targetData = targetRevision.revisionData || {}
+    var html = Article._revisionRenderInlineDiff(
+      '标题', baseData.articleTitle || '', targetData.articleTitle || '', onlyDiff)
+    html += Article._revisionRenderLineDiff(
+      '内容', baseData.articleContent || '', targetData.articleContent || '', onlyDiff)
+    $('#revisions .revision-diff').html(html || '<b>无差异</b>')
+  },
+  /**
+   * 渲染标题差异
+   * @param {string} title 分区标题
+   * @param {string} baseText 原文本
+   * @param {string} targetText 新文本
+   * @param {boolean} onlyDiff 是否只看差异
+   * @returns {string} HTML
+   */
+  _revisionRenderInlineDiff: function (title, baseText, targetText, onlyDiff) {
+    var diff = JsDiff.diffWordsWithSpace ?
+      JsDiff.diffWordsWithSpace(baseText, targetText) :
+      JsDiff.diffWords(baseText, targetText)
+    var changed = false
+    var body = ''
+    for (var i = 0; i < diff.length; i++) {
+      var type = diff[i].added ? 'add' : diff[i].removed ? 'remove' : 'same'
+      changed = changed || type !== 'same'
+      if (onlyDiff && type === 'same') {
+        continue
+      }
+      body += '<span class="revision-diff-word revision-diff-word--' + type + '">' +
+        Article._revisionEscapeHTML(diff[i].value) + '</span>'
+    }
+    if (onlyDiff && !changed) {
+      return ''
+    }
+    return '<section class="revision-diff-section"><h3>' + title + '</h3>' +
+      '<div class="revision-diff-title">' + body + '</div></section>'
+  },
+  /**
+   * 渲染正文差异
+   * @param {string} title 分区标题
+   * @param {string} baseText 原正文
+   * @param {string} targetText 新正文
+   * @param {boolean} onlyDiff 是否只看差异
+   * @returns {string} HTML
+   */
+  _revisionRenderLineDiff: function (title, baseText, targetText, onlyDiff) {
+    var diff = JsDiff.diffLines(baseText, targetText)
+    var changed = false
+    var body = ''
+    for (var i = 0; i < diff.length; i++) {
+      var type = diff[i].added ? 'add' : diff[i].removed ? 'remove' : 'same'
+      changed = changed || type !== 'same'
+      if (onlyDiff && type === 'same') {
+        continue
+      }
+      body += Article._revisionLineHtml(diff[i].value, type)
+    }
+    if (onlyDiff && !changed) {
+      return ''
+    }
+    return '<section class="revision-diff-section"><h3>' + title + '</h3>' +
+      '<div class="revision-diff-lines">' + body + '</div></section>'
+  },
+  /**
+   * 渲染差异行
+   * @param {string} value 文本
+   * @param {string} type 差异类型
+   * @returns {string} HTML
+   */
+  _revisionLineHtml: function (value, type) {
+    var lines = Article._revisionSplitLines(value)
+    var html = ''
+    for (var i = 0; i < lines.length; i++) {
+      html += '<div class="revision-diff-line revision-diff-line--' + type + '">' +
+        '<span class="revision-diff-line__text">' +
+        Article._revisionEscapeHTML(lines[i]) + '</span></div>'
+    }
+    return html
+  },
+  /**
+   * 按行拆分，去掉 diff 片段末尾的分隔空行
+   * @param {string} value 文本
+   * @returns {Array} 行列表
+   */
+  _revisionSplitLines: function (value) {
+    var lines = value.split('\n')
+    if (lines[lines.length - 1] === '') {
+      lines.pop()
+    }
+    return lines
+  },
+  /**
+   * 转义 HTML
+   * @param {string} text 原文
+   * @returns {string} 转义结果
+   */
+  _revisionEscapeHTML: function (text) {
+    return String(text).
+      replace(/&/g, '&amp;').
+      replace(/</g, '&lt;').
+      replace(/>/g, '&gt;').
+      replace(/"/g, '&quot;').
+      replace(/'/g, '&#39;')
   },
   /**
    * @description 分享按钮

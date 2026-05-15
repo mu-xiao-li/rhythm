@@ -1,0 +1,347 @@
+<#--
+
+    Rhythm - A modern community (forum/BBS/SNS/blog) platform written in Java.
+    Modified version from Symphony, Thanks Symphony :)
+    Copyright (C) 2012-present, b3log.org
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Affero General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU Affero General Public License for more details.
+
+    You should have received a copy of the GNU Affero General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+-->
+<#include "macro-admin.ftl">
+<@admin "articles">
+<div class="wrapper">
+    <div class="module">
+        <div class="module-header">
+            <h2>${unmodifiableLabel}</h2>
+        </div>
+        <div class="module-panel form fn-clear">
+            <label for="oId">Id</label>
+            <input type="text" id="oId" name="oId" value="${article.oId}" readonly="readonly" />
+
+            <label for="articleAuthorId">${authorIdLabel}</label>
+            <input type="text" id="articleAuthorId" name="articleAuthorId" value="${article.articleAuthorId}" readonly="readonly" />
+
+            <label for="articleCommentCount">${commentCountLabel}</label>
+            <input type="text" id="articleCommentCount" name="articleCommentCount" value="${article.articleCommentCount?c}" readonly="readonly" />
+
+            <label for="articleViewCount">${viewCountLabel}</label>
+            <input type="text" id="articleViewCount" name="articleViewCount" value="${article.articleViewCount?c}" readonly="readonly" />
+
+            <label for="articlePermalink">${permalinkLabel}</label>
+            <input type="text" id="articlePermalink" name="articlePermalink" value="${servePath}${article.articlePermalink}" />
+
+            <label for="articleCreateTime">${createTimeLabel}</label>
+            <input type="text" id="articleCreateTime" name="articleCreateTime" value="${article.articleCreateTime?c}" />
+
+            <label for="articleUpdateTime">${updateTimeLabel}</label>
+            <input type="text" id="articleUpdateTime" name="articleUpdateTime" value="${article.articleUpdateTime?c}" />
+
+            <label for="articleEditorType">${eidotrTypeLabel}</label>
+            <input type="text" id="articleEditorType" name="articleEditorType" value="${article.articleEditorType}" readonly="readonly" />
+
+            <label for="articleIP">IP</label>
+            <input type="text" id="articleIP" name="articleIP" value="${article.articleIP}" readonly="readonly" />
+
+            <label for="articleUA">UA</label>
+            <input type="text" id="articleUA" name="articleUA" value="${article.articleUA}" readonly="readonly" />
+
+            <#if article.articleType?? && 6 == article.articleType>
+            <label for="articleColumnTitle">专栏</label>
+            <input type="text" id="articleColumnTitle" name="articleColumnTitle" value="${article.columnTitle!'-'}" readonly="readonly" />
+
+            <label for="articleColumnId">专栏ID</label>
+            <input type="text" id="articleColumnId" name="articleColumnId" value="${article.columnId!'-'}" readonly="readonly" />
+
+            <label for="articleChapterNo">章节号</label>
+            <input type="text" id="articleChapterNo" name="articleChapterNo" value="${article.chapterNo!'-'}" readonly="readonly" />
+            </#if>
+
+            <label for"articleStick">${stickLabel}</label>
+            <input type="text" id="articleStick" name="articleStick" value="${article.articleStick?c}" readonly="readonly" />
+
+            <label for="articleAnonymous">${anonymousLabel}</label>
+            <select id="articleAnonymous" name="articleAnonymous" disabled="disabled">
+                <option value="0"<#if 0 == article.articleAnonymous> selected</#if>>${noLabel}</option>
+                <option value="1"<#if 1 == article.articleAnonymous> selected</#if>>${yesLabel}</option>
+            </select>
+        </div>
+    </div>
+
+    <#if permissions["articleUpdateArticleBasic"].permissionGrant>
+    <div class="module">
+        <div class="module-header">
+            <h2>${modifiableLabel}</h2>
+        </div>
+        <div class="module-panel form fn-clear">
+            <form action="${servePath}/admin/article/${article.oId}" method="POST">
+                <label for="articleTitle">${titleLabel}</label>
+                <input type="text" id="articleTitle" name="articleTitle" value="${article.articleTitle}" />
+
+                <label for="articleTags">${tagLabel}</label>
+                <input type="text" id="articleTags" name="articleTags" value="${article.articleTags}" />
+
+                <label for="articleContent">${contentLabel}</label>
+                <textarea name="articleContent" rows="28">${article.articleContent}</textarea>
+
+                <label for="articleRewardContent">${rewardContentLabel}</label>
+                <textarea name="articleRewardContent">${article.articleRewardContent}</textarea>
+
+                <label for="articleRewardPoint">${rewardPointLabel}</label>
+                <input type="text" id="articleRewardPoint" name="articleRewardPoint" value="${article.articleRewardPoint?c}"/>
+
+                <label for="articleQnAOfferPoint">${qnaOfferPointLabel}</label>
+                <input type="text" id="articleQnAOfferPoint" name="articleQnAOfferPoint" value="${article.articleQnAOfferPoint?c}"/>
+
+                <label>${perfectLabel}</label>
+                <select id="articlePerfect" name="articlePerfect">
+                    <option value="0"<#if 0 == article.articlePerfect> selected</#if>>${noLabel}</option>
+                    <option value="1"<#if 1 == article.articlePerfect> selected</#if>>${yesLabel}</option>
+                </select>
+
+                <label>${commentableLabel}</label>
+                <select id="articleCommentable" name="articleCommentable">
+                    <option value="true"<#if article.articleCommentable> selected</#if>>${yesLabel}</option>
+                    <option value="false"<#if !article.articleCommentable> selected</#if>>${noLabel}</option>
+                </select>
+
+                <label>${articleStatusLabel}</label>
+                <select id="articleStatus" name="articleStatus">
+                    <option value="0"<#if 0 == article.articleStatus> selected</#if>>${validLabel}</option>
+                    <option value="1"<#if 1 == article.articleStatus> selected</#if>>${banLabel}</option>
+                </select>
+
+                <label>${articleTypeLabel}</label>
+                <select id="articleType" name="articleType">
+                    <option value="0"<#if 0 == article.articleType> selected</#if>>${articleLabel}</option>
+                    <option value="1"<#if 1 == article.articleType> selected</#if>>${discussionLabel}</option>
+                    <option value="2"<#if 2 == article.articleType> selected</#if>>${cityBroadcastLabel}</option>
+                    <option value="3"<#if 3 == article.articleType> selected</#if>>${thoughtLabel}</option>
+                    <option value="5"<#if 5 == article.articleType> selected</#if>>${qnaLabel}</option>
+                    <option value="6"<#if 6 == article.articleType> selected</#if>>${longArticleTypeLabel}</option>
+                </select>
+
+                <div id="adminLongArticleColumnWrap"<#if 6 != article.articleType> style="display:none"</#if>>
+                    <#assign adminLongColumns = longArticleColumns![]>
+                    <#assign adminSelectedColumnId = article.columnId!"">
+                    <#assign adminSelectedColumnTitle = article.columnTitle!"">
+                    <#assign adminShowCreateColumnInput = !adminSelectedColumnId?has_content && adminSelectedColumnTitle?has_content>
+                    <#assign adminHasSelectedColumn = false>
+                    <#list adminLongColumns as longColumn>
+                        <#if adminSelectedColumnId == longColumn.oId>
+                            <#assign adminHasSelectedColumn = true>
+                        </#if>
+                    </#list>
+
+                    <label for="adminLongArticleColumnId">专栏归属</label>
+                    <select id="adminLongArticleColumnId" name="columnId">
+                        <option value="">不归属专栏（下架专栏）</option>
+                        <#if adminSelectedColumnId?has_content && !adminHasSelectedColumn>
+                            <option value="${adminSelectedColumnId}" selected>${article.columnTitle!adminSelectedColumnId}（当前专栏）</option>
+                        </#if>
+                        <#list adminLongColumns as longColumn>
+                            <option value="${longColumn.oId}"<#if adminSelectedColumnId == longColumn.oId> selected</#if>>
+                                ${longColumn.columnTitle}<#if longColumn.columnArticleCount??>（${longColumn.columnArticleCount} 章）</#if>
+                            </option>
+                        </#list>
+                        <option value="__NEW__"<#if adminShowCreateColumnInput> selected</#if>>+ 新建专栏</option>
+                    </select>
+
+                    <div id="adminLongArticleColumnTitleWrap"<#if !adminShowCreateColumnInput> style="display:none"</#if>>
+                        <label for="adminLongArticleColumnTitle">新专栏名称</label>
+                        <input type="text" id="adminLongArticleColumnTitle" name="columnTitle" maxlength="64"
+                               value="${adminSelectedColumnTitle}" placeholder="请输入新专栏名称"/>
+                    </div>
+
+                    <div id="adminLongArticleChapterNoWrap"<#if !adminSelectedColumnId?has_content && !adminShowCreateColumnInput> style="display:none"</#if>>
+                        <label for="adminLongArticleChapterNo">章节号</label>
+                        <input type="number" min="1" id="adminLongArticleChapterNo" name="chapterNo"
+                               <#if !adminSelectedColumnId?has_content && !adminShowCreateColumnInput>disabled</#if>
+                               value="<#if article.chapterNo??>${article.chapterNo?c}</#if>" placeholder="留空自动排在专栏末尾"/>
+                    </div>
+
+                    <div id="adminLongArticleColumnTipWrap" class="ft-fade" style="margin:6px 0 10px;line-height:1.6;">
+                        管理员可为该长文新建专栏、切换专栏，或选择“不归属专栏”进行下架。
+                    </div>
+                </div>
+
+                <label for="articleGoodCnt">${goodCntLabel}</label>
+                <input type="text" id="articleGoodCnt" name="articleGoodCnt" value="${article.articleGoodCnt}" />
+
+                <label for="articleBadCnt">${badCntLabel}</label>
+                <input type="text" id="articleBadCnt" name="articleBadCnt" value="${article.articleBadCnt}" />
+                
+                <label for="articleAnonymousView">${miscAllowAnonymousViewLabel}</label>
+                <select id="articleAnonymousView" name="articleAnonymousView">
+                    <option value="0"<#if 0 == article.articleAnonymousView> selected</#if>>${useGlobalLabel}</option>
+                    <option value="1"<#if 1 == article.articleAnonymousView> selected</#if>>${noLabel}</option>
+                    <option value="2"<#if 2 == article.articleAnonymousView> selected</#if>>${yesLabel}</option>
+                </select>
+
+                <label for="articleId">${pushLabel} Email  ${sortLabel}</label>
+                <input type="number" id="articlePushOrder" name="articlePushOrder" value="${article.articlePushOrder}" />
+                <label>${showInListLabel}</label>
+                <select id="articleShowInList" name="articleShowInList">
+                    <option value="1"<#if 1==article.articleShowInList> selected</#if>>${yesLabel}</option>
+                    <option value="0"<#if 0==article.articleShowInList> selected</#if>>${noLabel}</option>
+                </select>
+                <br/><br/>
+                <button type="submit" class="green fn-right" >${submitLabel}</button>
+            </form>
+        </div>
+    </div>
+    </#if>
+
+    <#if permissions["articleStickArticle"].permissionGrant>
+    <div class="module">
+        <div class="module-header">
+            <h2>${stickLabel}</h2>
+        </div>
+        <div class="module-panel form fn-clear">
+            <form action="${servePath}/admin/stick-article" method="POST">
+                <label for="articleId">Id</label>
+                <input type="text" id="articleId" name="articleId" value="${article.oId}" readonly="readonly"/>
+
+                <br/><br/>
+                <button type="submit" class="green fn-right" >${submitLabel}</button>
+            </form>
+        </div>
+    </div>
+    </#if>
+
+    <#if permissions["articleCancelStickArticle"].permissionGrant>
+    <div class="module">
+        <div class="module-header">
+            <h2>${cancelStickLabel}</h2>
+        </div>
+        <div class="module-panel form fn-clear">
+            <form action="${servePath}/admin/cancel-stick-article" method="POST">
+                <label for="articleId">Id</label>
+                <input type="text" id="articleId" name="articleId" value="${article.oId}" readonly="readonly"/>
+
+                <br/><br/>
+                <button type="submit" class="green fn-right" >${submitLabel}</button>
+            </form>
+        </div>
+    </div>
+    </#if>
+
+    <#if (esEnabled || algoliaEnabled) && permissions["articleReindexArticle"].permissionGrant>
+    <div class="module">
+        <div class="module-header">
+            <h2>${searchIndexLabel}</h2>
+        </div>
+        <div class="module-panel form fn-clear">
+            <form action="${servePath}/admin/search-index-article" method="POST">
+                <label for="articleId">Id</label>
+                <input type="text" id="articleId" name="articleId" value="${article.oId}" readonly="readonly"/>
+
+                <br/><br/>
+                <button type="submit" class="green fn-right" >${submitLabel}</button>
+            </form>
+        </div>
+    </div>
+    </#if>
+
+    <#if permissions["articleRemoveArticle"].permissionGrant>
+    <div class="module">
+        <div class="module-header">
+            <h2 class="ft-red">${removeDataLabel}</h2>
+        </div>
+        <div class="module-panel form fn-clear">
+            <form action="${servePath}/admin/remove-article" method="POST" onsubmit="return window.confirm('${confirmRemoveLabel}')">
+                <label for="articleId">Id</label>
+                <input type="text" id="articleId" name="articleId" value="${article.oId}" readonly="readonly"/>
+
+                <br/><br/>
+                <button type="submit" class="red fn-right" >${submitLabel}</button>
+            </form>
+        </div>
+    </div>
+    </#if>
+</div>
+<script>
+(function () {
+    var articleTypeEl = document.getElementById('articleType');
+    var columnWrap = document.getElementById('adminLongArticleColumnWrap');
+    var columnTipWrap = document.getElementById('adminLongArticleColumnTipWrap');
+    var columnSelect = document.getElementById('adminLongArticleColumnId');
+    var columnTitleWrap = document.getElementById('adminLongArticleColumnTitleWrap');
+    var columnTitleInput = document.getElementById('adminLongArticleColumnTitle');
+    var chapterWrap = document.getElementById('adminLongArticleChapterNoWrap');
+    var chapterInput = document.getElementById('adminLongArticleChapterNo');
+
+    if (!articleTypeEl || !columnSelect || !columnWrap || !columnTitleWrap || !chapterWrap) {
+        return;
+    }
+
+    var toggleColumnForm = function () {
+        var selectedColumnId = columnSelect.value || '';
+        var isCreate = selectedColumnId === '__NEW__';
+        var isBound = selectedColumnId !== '';
+
+        if (isCreate) {
+            columnTitleWrap.style.display = '';
+            if (columnTitleInput) {
+                columnTitleInput.disabled = false;
+            }
+        } else {
+            columnTitleWrap.style.display = 'none';
+            if (columnTitleInput) {
+                columnTitleInput.disabled = true;
+            }
+        }
+
+        if (isBound) {
+            chapterWrap.style.display = '';
+            if (chapterInput) {
+                chapterInput.disabled = false;
+            }
+        } else {
+            chapterWrap.style.display = 'none';
+            if (chapterInput) {
+                chapterInput.disabled = true;
+                chapterInput.value = '';
+            }
+            if (columnTitleInput) {
+                columnTitleInput.value = '';
+            }
+        }
+    };
+
+    var toggleByType = function () {
+        var isLongArticle = articleTypeEl.value === '6';
+        columnWrap.style.display = isLongArticle ? '' : 'none';
+        if (columnTipWrap) {
+            columnTipWrap.style.display = isLongArticle ? '' : 'none';
+        }
+
+        if (!isLongArticle) {
+            columnSelect.value = '';
+            if (columnTitleInput) {
+                columnTitleInput.value = '';
+            }
+            if (chapterInput) {
+                chapterInput.value = '';
+            }
+        }
+
+        toggleColumnForm();
+    };
+
+    columnSelect.addEventListener('change', toggleColumnForm);
+    articleTypeEl.addEventListener('change', toggleByType);
+    toggleByType();
+})();
+</script>
+</@admin>

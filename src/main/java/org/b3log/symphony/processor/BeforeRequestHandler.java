@@ -40,9 +40,11 @@ import org.b3log.symphony.model.Option;
 import org.b3log.symphony.model.UserExt;
 import org.b3log.symphony.processor.middleware.AnonymousViewCheckMidware;
 import org.b3log.symphony.repository.OptionRepository;
+import org.b3log.symphony.service.SkinQueryService;
 import org.b3log.symphony.service.UserQueryService;
 import org.b3log.symphony.util.Firewall;
 import org.b3log.symphony.util.Sessions;
+import org.b3log.symphony.util.SearchEngines;
 import org.b3log.symphony.util.Symphonys;
 import org.json.JSONObject;
 import pers.adlered.simplecurrentlimiter.main.SimpleCurrentLimiter;
@@ -80,11 +82,16 @@ public class BeforeRequestHandler implements Handler {
 
         if (context.header(Common.USER_AGENT) == null) {
             context.sendStatus(418);
+            context.abort();
             return;
         }
 
         final String ip = Requests.getRemoteAddr(context.getRequest());
-        Firewall.recordAndMaybeBan(ip);
+        if (!Firewall.recordAndMaybeBan(ip)) {
+            context.sendStatus(429);
+            context.abort();
+            return;
+        }
         // 黑名单判断
         if (AnonymousViewCheckMidware.isEnabled()
                 && AnonymousViewCheckMidware.ipBlacklistCache.getIfPresent(ip) != null
@@ -92,6 +99,7 @@ public class BeforeRequestHandler implements Handler {
                 && !context.requestURI().equals("/validateCaptcha")) {
             // 已经在黑名单，强制跳转到验证码页面
             context.sendRedirect("/test");
+            context.abort();
             System.out.println(ip + " 已经在黑名单中");
             return;
         }
@@ -118,7 +126,10 @@ public class BeforeRequestHandler implements Handler {
 
         Stopwatchs.start("Resolve skin");
 
-        final String templateDirName = Sessions.isMobile() ? "mobile" : "classic";
+        final BeanManager beanManager = BeanManager.getInstance();
+        final SkinQueryService skinQueryService = beanManager.getReference(SkinQueryService.class);
+        final String device = Sessions.isMobile() ? SkinQueryService.DEVICE_MOBILE : SkinQueryService.DEVICE_PC;
+        final String templateDirName = skinQueryService.getDefaultSkin(device);
         Sessions.setTemplateDir(templateDirName);
 
         final Request request = context.getRequest();
@@ -126,7 +137,6 @@ public class BeforeRequestHandler implements Handler {
         httpSession.setAttribute(Keys.TEMPLATE_DIR_NAME, templateDirName);
 
         try {
-            final BeanManager beanManager = BeanManager.getInstance();
             final UserQueryService userQueryService = beanManager.getReference(UserQueryService.class);
             final OptionRepository optionRepository = beanManager.getReference(OptionRepository.class);
 
@@ -148,8 +158,9 @@ public class BeforeRequestHandler implements Handler {
             httpSession.setAttribute(User.USER, user.toString());
 
             final String skin = Sessions.isMobile() ? user.optString(UserExt.USER_MOBILE_SKIN) : user.optString(UserExt.USER_SKIN);
-            httpSession.setAttribute(Keys.TEMPLATE_DIR_NAME, skin);
-            Sessions.setTemplateDir(skin);
+            final String normalizedSkin = skinQueryService.normalizeSkin(skin, device);
+            httpSession.setAttribute(Keys.TEMPLATE_DIR_NAME, normalizedSkin);
+            Sessions.setTemplateDir(normalizedSkin);
             Sessions.setAvatarViewMode(user.optInt(UserExt.USER_AVATAR_VIEW_MODE));
             Sessions.setUser(user);
             Sessions.setLoggedIn(true);
@@ -165,6 +176,14 @@ public class BeforeRequestHandler implements Handler {
 
     private static void fillBotAttrs(final RequestContext context) {
         final String userAgentStr = context.header(Common.USER_AGENT);
+        final String ip = Requests.getRemoteAddr(context.getRequest());
+        final SearchEngines.Engine claimedEngine = SearchEngines.detectCrawler(userAgentStr);
+        if (null != claimedEngine && SearchEngines.isVerifiedCrawler(ip, userAgentStr)) {
+            LOGGER.log(Level.DEBUG, "Verified search engine crawler [{}] [User-Agent={}]", claimedEngine.key(), userAgentStr);
+            Sessions.setBot(true);
+            return;
+        }
+
         final UserAgent userAgent = UserAgent.parseUserAgentString(userAgentStr);
         BrowserType browserType = userAgent.getBrowser().getBrowserType();
         if (StringUtils.containsIgnoreCase(userAgentStr, "mobile")
@@ -175,7 +194,6 @@ public class BeforeRequestHandler implements Handler {
                 || StringUtils.containsIgnoreCase(userAgentStr, "Android")) {
             browserType = BrowserType.MOBILE_BROWSER;
         } else if (StringUtils.containsIgnoreCase(userAgentStr, "Iframely")
-                || StringUtils.containsIgnoreCase(userAgentStr, "Google")
                 || StringUtils.containsIgnoreCase(userAgentStr, "BUbiNG")
                 || StringUtils.containsIgnoreCase(userAgentStr, "ltx71")) {
             browserType = BrowserType.ROBOT;
@@ -192,6 +210,10 @@ public class BeforeRequestHandler implements Handler {
                 LOGGER.log(Level.WARN, "Unknown client [UA=" + userAgentStr + ", remoteAddr="
                         + Requests.getRemoteAddr(context.getRequest()) + ", URI=" + context.requestURI() + "]");
             }
+        }
+
+        if (null != claimedEngine && BrowserType.ROBOT == browserType) {
+            browserType = BrowserType.UNKNOWN;
         }
 
         if (BrowserType.ROBOT == browserType) {

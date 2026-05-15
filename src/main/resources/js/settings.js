@@ -21,9 +21,7 @@
  *
  * @author <a href="http://vanessa.b3log.org">Liyuan Li</a>
  * @author <a href="http://88250.b3log.org">Liang Ding</a>
- * @author <a href="https://ld246.com/member/ZephyrJung">Zephyr</a>
- * @version 1.27.0.1, Mar 17, 2019
- */
+ * @author <a href="https://ld246.com/member/ZephyrJung">Zephyr</a> */
 
 /**
  * @description Settings function
@@ -1198,6 +1196,12 @@ var Settings = {
           iconURL: iconURL
         }
         break
+      case 'skin':
+        requestJSONObject = {
+          userSkin: $('#userSkin').val(),
+          userMobileSkin: $('#userMobileSkin').val(),
+        }
+        break
       case 'deactivate':
         break
       default:
@@ -1230,6 +1234,10 @@ var Settings = {
             removeClass('error').
             html('<ul><li>' + Label.updateSuccLabel + '</li></ul>').
             show()
+          if (type === 'skin') {
+            window.location.reload()
+            return
+          }
           if (type === 'profiles') {
             $('#userNicknameDom').text(requestJSONObject.userNickname)
             $('#userTagsDom').text(requestJSONObject.userTags)
@@ -1545,6 +1553,7 @@ var Settings = {
    */
   currentEmojiGroupId:'', // 当前选择的分组id
     emojiGroups:[],
+  emojiLocalUploadInitialized: false,
   initEmojiGroups: function () {
       Settings.currentEmojiGroupId="";
       Settings.loadEmojiGroups();
@@ -1933,20 +1942,76 @@ var Settings = {
       }
     });
   },
+  ensureDialogContainer: function (id) {
+    var $dialog = $('#' + id);
+    if ($dialog.length === 0) {
+      $('body').append('<div id="' + id + '"></div>');
+      $dialog = $('#' + id);
+    }
+    return $dialog;
+  },
+  openSettingsDialog: function (id, options) {
+    Settings.ensureDialogContainer(id).html(options.html);
+    $('#' + id).dialog({
+      'width': $(window).width() > options.width ? options.width : $(window).width() - 50,
+      'height': options.height,
+      'modal': true,
+      'hideFooter': true,
+      'title': options.title
+    });
+    $('#' + id).dialog('open');
+    return $('#' + id);
+  },
+  escapeDialogHTML: function (value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  },
   /**
    * 创建新分组
    */
   createEmojiGroup: function () {
-    var groupName = prompt('请输入分组名称：', '');
-    if (!groupName || groupName.trim() === '') {
+    var html = ''
+      + '<div class="emoji-dialog">'
+      + '  <div class="emoji-dialog__desc">创建后会立即出现在你的表情分组列表中，可继续添加、排序或分享。</div>'
+      + '  <div class="emoji-dialog__field">'
+      + '    <label class="emoji-dialog__label" for="createEmojiGroupName">分组名称</label>'
+      + '    <input id="createEmojiGroupName" class="emoji-dialog__input" type="text" maxlength="20" placeholder="请输入分组名称" />'
+      + '  </div>'
+      + '  <div class="emoji-dialog__actions">'
+      + '    <button type="button" onclick="$(\'#createEmojiGroupDialog\').dialog(\'close\')">取消</button>'
+      + '    <button type="button" class="green" onclick="Settings.confirmCreateEmojiGroup()">确定</button>'
+      + '  </div>'
+      + '</div>';
+
+    Settings.openSettingsDialog('createEmojiGroupDialog', {
+      html: html,
+      title: '添加表情分组',
+      width: 430,
+      height: 260
+    });
+
+    $('#createEmojiGroupName').focus().off('keydown').on('keydown', function (event) {
+      if (event.keyCode === 13) {
+        Settings.confirmCreateEmojiGroup();
+      }
+    });
+  },
+  confirmCreateEmojiGroup: function () {
+    var groupName = $('#createEmojiGroupName').val().trim();
+    if (!groupName) {
+      Util.notice('warning', 2000, '请输入分组名称');
       return;
     }
-    
+
     $.ajax({
       url: Label.servePath + '/api/emoji/group/create',
       type: 'POST',
       data: JSON.stringify({
-        name: groupName.trim(),
+        name: groupName,
         sort: 0
       }),
       contentType: 'application/json;charset=UTF-8',
@@ -1956,6 +2021,7 @@ var Settings = {
               return;
           }
           Util.notice('success', 1200, '创建分组成功');
+          $('#createEmojiGroupDialog').dialog('close');
           Settings.loadEmojiGroups();
       },
       error: function () {
@@ -1963,40 +2029,306 @@ var Settings = {
       }
     });
   },
+  getCurrentEmojiGroupMeta: function () {
+    for (var i = 0; i < Settings.emojiGroups.length; i++) {
+      if (Settings.emojiGroups[i].oId === Settings.currentEmojiGroupId) {
+        return Settings.emojiGroups[i];
+      }
+    }
+    return null;
+  },
+  shareCurrentEmojiGroup: function () {
+    var currentGroup = Settings.getCurrentEmojiGroupMeta();
+    if (!currentGroup || !currentGroup.oId) {
+      Util.notice('warning', 2000, '请先选择一个分组');
+      return;
+    }
+    if (parseInt(currentGroup.type, 10) === 1) {
+      Util.notice('warning', 2000, '“全部”分组不支持直接分享，请切换到具体分类');
+      return;
+    }
+
+    $.ajax({
+      url: Label.servePath + '/api/emoji/group/share/create',
+      type: 'POST',
+      data: JSON.stringify({
+        groupId: currentGroup.oId
+      }),
+      contentType: 'application/json;charset=UTF-8',
+      success: function (result) {
+        if (result.code === 0) {
+          Settings.showEmojiShareResult(result.data || {});
+        } else {
+          Util.notice('warning', 2000, result.msg || '生成分享码失败');
+        }
+      },
+      error: function () {
+        Util.notice('warning', 2000, '生成分享码失败，请检查网络');
+      }
+    });
+  },
+  showEmojiShareResult: function (data) {
+    var shareCode = data.shareCode || '';
+    var groupName = data.groupName || '当前分组';
+    var emojiCount = data.emojiCount || 0;
+    var html = ''
+      + '<div class="emoji-dialog">'
+      + '  <div class="emoji-dialog__desc">已为分组 <b>' + Settings.escapeDialogHTML(groupName) + '</b> 生成永久分享码，当前快照共 ' + emojiCount + ' 个表情。<br>该分享是静态快照，后续你再修改分组内容，不会实时影响这次分享。</div>'
+      + '  <div class="emoji-dialog__field">'
+      + '    <label class="emoji-dialog__label" for="emojiShareCodeValue">分享码</label>'
+      + '    <div class="emoji-dialog__row">'
+      + '      <input id="emojiShareCodeValue" class="emoji-dialog__input emoji-dialog__input--code" type="text" readonly value="' + Settings.escapeDialogHTML(shareCode) + '" />'
+      + '      <button type="button" class="green" onclick="Settings.copyEmojiShareCode()">复制</button>'
+      + '    </div>'
+      + '  </div>'
+      + '  <div class="emoji-dialog__actions">'
+      + '    <button type="button" class="green" onclick="$(\'#emojiShareDialog\').dialog(\'close\')">关闭</button>'
+      + '  </div>'
+      + '</div>';
+
+    Settings.openSettingsDialog('emojiShareDialog', {
+      html: html,
+      title: '表情集分享码',
+      width: 460,
+      height: 292
+    });
+    $('#emojiShareCodeValue').focus().select();
+  },
+  copyEmojiShareCode: function () {
+    var $input = $('#emojiShareCodeValue');
+    if ($input.length === 0) {
+      return;
+    }
+
+    var value = $input.val();
+    $input.focus().select();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(value).then(function () {
+        Util.notice('success', 1200, '分享码已复制');
+      }).catch(function () {
+        document.execCommand('copy');
+        Util.notice('success', 1200, '分享码已复制');
+      });
+      return;
+    }
+
+    document.execCommand('copy');
+    Util.notice('success', 1200, '分享码已复制');
+  },
+  importEmojiShare: function () {
+    var html = ''
+      + '<div class="emoji-dialog">'
+      + '  <div class="emoji-dialog__desc">请输入别人分享给你的表情集分享码，导入后会在你的账号下新建一个分组。</div>'
+      + '  <div class="emoji-dialog__field">'
+      + '    <label class="emoji-dialog__label" for="emojiShareImportCode">分享码</label>'
+      + '    <input id="emojiShareImportCode" class="emoji-dialog__input emoji-dialog__input--code" type="text" placeholder="请输入分享码" />'
+      + '  </div>'
+      + '  <div class="emoji-dialog__actions">'
+      + '    <button type="button" onclick="$(\'#emojiShareImportDialog\').dialog(\'close\')">取消</button>'
+      + '    <button type="button" class="green" onclick="Settings.confirmImportEmojiShare()">导入</button>'
+      + '  </div>'
+      + '</div>';
+
+    Settings.openSettingsDialog('emojiShareImportDialog', {
+      html: html,
+      title: '导入表情集分享码',
+      width: 460,
+      height: 284
+    });
+    $('#emojiShareImportCode').focus().off('keydown').on('keydown', function (event) {
+      if (event.keyCode === 13) {
+        Settings.confirmImportEmojiShare();
+      }
+    });
+  },
+  confirmImportEmojiShare: function () {
+    var shareCode = $('#emojiShareImportCode').val().trim();
+    if (!shareCode) {
+      Util.notice('warning', 2000, '请输入分享码');
+      return;
+    }
+
+    $.ajax({
+      url: Label.servePath + '/api/emoji/group/share/import',
+      type: 'POST',
+      data: JSON.stringify({
+        shareCode: shareCode
+      }),
+      contentType: 'application/json;charset=UTF-8',
+      success: function (result) {
+        if (result.code === 0) {
+          var data = result.data || {};
+          Util.notice('success', 1800, '导入成功，已创建分组：' + (data.groupName || '未命名分组'));
+          $('#emojiShareImportDialog').dialog('close');
+          Settings.loadEmojiGroups();
+          if (data.groupId) {
+            setTimeout(function () {
+              Settings.selectEmojiGroup(data.groupId);
+            }, 300);
+          }
+        } else {
+          Util.notice('warning', 2000, result.msg || '导入分享码失败');
+        }
+      },
+      error: function () {
+        Util.notice('warning', 2000, '导入分享码失败，请检查网络');
+      }
+    });
+  },
+  initEmojiLocalUpload: function () {
+    if (Settings.emojiLocalUploadInitialized) {
+      return;
+    }
+
+    $(document).on('change.emojiLocalUpload', '#emojiLocalUploadInput', function () {
+      var file = this.files && this.files[0];
+      if (!file) {
+        return;
+      }
+
+      Settings.uploadLocalEmojiFile(file, this);
+    });
+
+    Settings.emojiLocalUploadInitialized = true;
+  },
+  openLocalEmojiUpload: function () {
+    var currentGroup = Settings.getCurrentEmojiGroupMeta();
+    if (!currentGroup || !currentGroup.oId) {
+      Util.notice('warning', 2000, '请先选择一个分组');
+      return;
+    }
+
+    Settings.initEmojiLocalUpload();
+    $('#emojiLocalUploadInput').val('');
+    $('#emojiLocalUploadInput').click();
+  },
+  uploadLocalEmojiFile: function (file, inputEl) {
+    if (!file) {
+      return;
+    }
+
+    if (window.File && window.FileReader && window.FileList && window.Blob) {
+      var reader = new FileReader();
+      reader.readAsArrayBuffer(file);
+      reader.onload = function (evt) {
+        var fileBuf = new Uint8Array(evt.target.result.slice(0, 11));
+        var isImg = isImage(fileBuf);
+
+        if (!isImg) {
+          Util.alert('只允许上传图片!');
+          $(inputEl).val('');
+          return;
+        }
+
+        if (evt.target.result.byteLength > 1024 * 1024 * 5) {
+          Util.alert('图片过大 (最大限制 5M)');
+          $(inputEl).val('');
+          return;
+        }
+
+        Settings.submitLocalEmojiUpload(file, inputEl);
+      };
+      return;
+    }
+
+    Settings.submitLocalEmojiUpload(file, inputEl);
+  },
+  submitLocalEmojiUpload: function (file, inputEl) {
+    var formData = new FormData();
+    formData.append('file[]', file);
+
+    $.ajax({
+      url: Label.servePath + '/upload',
+      type: 'POST',
+      data: formData,
+      processData: false,
+      contentType: false,
+      success: function (result) {
+        var succMap = result && result.data ? result.data.succMap : null;
+        var keys = succMap ? Object.keys(succMap) : [];
+        if (keys.length === 0) {
+          Util.notice('warning', 2000, '上传成功，但未拿到表情地址');
+          $(inputEl).val('');
+          return;
+        }
+
+        Settings.addUploadedEmojiToCurrentGroup(succMap[keys[0]]);
+        $(inputEl).val('');
+      },
+      error: function (xhr) {
+        Util.alert('Upload error: ' + (xhr && xhr.statusText ? xhr.statusText : 'unknown'));
+        $(inputEl).val('');
+      }
+    });
+  },
+  addUploadedEmojiToCurrentGroup: function (url) {
+    var groupId = Settings.currentEmojiGroupId;
+    if (!groupId || !url) {
+      Util.notice('warning', 2000, '上传结果不完整');
+      return;
+    }
+
+    $.ajax({
+      url: Label.servePath + '/api/emoji/group/add-url-emoji',
+      type: 'POST',
+      data: JSON.stringify({
+        groupId: groupId,
+        url: url,
+        sort: 0,
+        name: ''
+      }),
+      contentType: 'application/json;charset=UTF-8',
+      success: function (result) {
+        if (result.code === 0) {
+          Util.notice('success', 1200, '上传并添加表情成功');
+          Settings.loadGroupEmojis(groupId);
+        } else {
+          Util.notice('warning', 2000, result.msg || '上传后添加表情失败');
+        }
+      },
+      error: function () {
+        Util.notice('warning', 2000, '上传后添加表情失败，请检查网络');
+      }
+    });
+  },
   /**
    * 显示通过URL添加表情的弹窗
    */
   addEmojiByUrl: function () {
-    // 生成弹窗HTML
-    var html = '<div class="form fn-clear" style="padding:0 20px;">';
-
-    html += '</select>';
-    html += '<label>表情URL：</label><br>';
-    html += '<input id="emojiUrl" type="text" placeholder="请输入表情图片URL" style="width: 100%; padding: 8px; margin-bottom: 10px;"/>';
-    html += '<label>表情别名（可选）：</label><br>';
-    html += '<input id="emojiAlias" type="text" placeholder="可选，输入表情别名" style="width: 100%; padding: 8px; margin-bottom: 10px;"/>';
-    html += '<br><br>';
-    html += '<button onclick="Settings.confirmAddUrlEmoji()" class="fn-right green">确定</button>';
-    html += '<button onclick="$(\'#addUrlEmojiDialog\').dialog(\'close\')" class="fn-right" style="margin-right: 10px;">取消</button>';
-    html += '</div>';
-    
-    // 检查弹窗是否存在，如果不存在则创建
-    if ($('#addUrlEmojiDialog').length === 0) {
-      $('body').append('<div id="addUrlEmojiDialog"></div>');
+    if (!Settings.currentEmojiGroupId) {
+      Util.notice('warning', 2000, '请先选择一个分组');
+      return;
     }
-    
-    $('#addUrlEmojiDialog').html(html);
-    
-    // 初始化弹窗
-    $('#addUrlEmojiDialog').dialog({
-      'width': $(window).width() > 400 ? 400 : $(window).width() - 50,
-        'height':300,
-      'modal': true,
-      'hideFooter': true,
-      'title': '通过URL添加表情'
+
+    var html = ''
+      + '<div class="emoji-dialog">'
+      + '  <div class="emoji-dialog__desc">粘贴可直接访问的图片地址，保存后会添加到当前选中的表情分组。</div>'
+      + '  <div class="emoji-dialog__field">'
+      + '    <label class="emoji-dialog__label" for="emojiUrl">表情 URL</label>'
+      + '    <input id="emojiUrl" class="emoji-dialog__input" type="text" placeholder="请输入表情图片 URL" />'
+      + '  </div>'
+      + '  <div class="emoji-dialog__field">'
+      + '    <label class="emoji-dialog__label" for="emojiAlias">表情别名（可选）</label>'
+      + '    <input id="emojiAlias" class="emoji-dialog__input" type="text" maxlength="20" placeholder="可选，输入表情别名" />'
+      + '  </div>'
+      + '  <div class="emoji-dialog__actions">'
+      + '    <button type="button" onclick="$(\'#addUrlEmojiDialog\').dialog(\'close\')">取消</button>'
+      + '    <button type="button" class="green" onclick="Settings.confirmAddUrlEmoji()">确定</button>'
+      + '  </div>'
+      + '</div>';
+
+    Settings.openSettingsDialog('addUrlEmojiDialog', {
+      html: html,
+      title: '通过URL添加表情',
+      width: 430,
+      height: 340
     });
-    
-    $('#addUrlEmojiDialog').dialog('open');
+
+    $('#emojiUrl').focus().off('keydown').on('keydown', function (event) {
+      if (event.keyCode === 13) {
+        Settings.confirmAddUrlEmoji();
+      }
+    });
   },
   /**
    * 确认通过URL添加表情到分组

@@ -22,7 +22,6 @@
  * @author <a href="http://88250.b3log.org">Liang Ding</a>
  * @author <a href="http://vanessa.b3log.org">Liyuan Li</a>
  * @author <a href="https://ld246.com/member/ZephyrJung">Zephyr</a>
- * @version 1.14.0.3, Mar 17, 2019
  */
 
 /**
@@ -78,6 +77,7 @@ var ArticleChannel = {
                     } else {
                         $('#comments > .list > ul').prepend(data.cmtTpl)
                     }
+                    Comment.initReactionWidgets($('#' + data.commentId))
 
                     // ua
                     $('#' + data.commentId + ' .cmt-via').text('via ' + Util.getDeviceByUa(data.commentUA))
@@ -130,6 +130,16 @@ var ArticleChannel = {
                         }, 2000)
                     }
 
+                    break
+                case 'commentReaction':
+                    if (typeof Comment !== 'undefined' && Comment.updateReactionFromChannel) {
+                        Comment.updateReactionFromChannel(data)
+                    }
+                    break
+                case 'articleReaction':
+                    if (typeof ArticleReaction !== 'undefined' && ArticleReaction.updateReactionFromChannel) {
+                        ArticleReaction.updateReactionFromChannel(data)
+                    }
                     break
                 default:
                     console.error('Wrong data [type=' + data.type + ']')
@@ -537,6 +547,12 @@ var ChatRoomChannel = {
                     Util.listenUserCard();
                     typeof ChatRoom==="object"&&ChatRoom.imageViewer()
                     break;
+                case 'chatReaction':
+                    if (typeof ChatRoom === 'object' &&
+                        typeof ChatRoom.updateReaction === 'function') {
+                        ChatRoom.updateReaction(data);
+                    }
+                    break;
             }
         }
 
@@ -556,9 +572,13 @@ var ChatRoomChannel = {
         dom.innerHTML = content;
         let imgList = dom.querySelectorAll('img');
         imgList.forEach(ele=>{
-            //if(ele.src.startsWith('https://file.fishpi.cn')){
-            ele.src = ele.src + '?imageView2/0/w/150/h/150/interlace/0/q/90'
-            //}
+            const source = ele.src || '';
+            const sharpIndex = source.indexOf('#');
+            const hash = sharpIndex > -1 ? source.substring(sharpIndex) : '';
+            const withoutHash = sharpIndex > -1 ? source.substring(0, sharpIndex) : source;
+            const queryIndex = withoutHash.indexOf('?');
+            const base = queryIndex > -1 ? withoutHash.substring(0, queryIndex) : withoutHash;
+            ele.src = base + '?imageView2/0/w/150/h/150/interlace/0/q/90' + hash;
         })
         return dom.innerHTML;
     },

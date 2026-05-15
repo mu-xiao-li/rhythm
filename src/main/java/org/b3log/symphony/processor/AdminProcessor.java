@@ -48,7 +48,6 @@ import org.b3log.latke.repository.*;
 import org.b3log.latke.service.LangPropsService;
 import org.b3log.latke.service.ServiceException;
 import org.b3log.latke.util.CollectionUtils;
-import org.b3log.latke.util.Execs;
 import org.b3log.latke.util.Paginator;
 import org.b3log.latke.util.Strings;
 import org.b3log.symphony.Server;
@@ -57,6 +56,7 @@ import org.b3log.symphony.model.*;
 import org.b3log.symphony.processor.bot.ChatRoomBot;
 import org.b3log.symphony.processor.channel.*;
 import org.b3log.symphony.processor.middleware.AnonymousViewCheckMidware;
+import org.b3log.symphony.processor.middleware.CSRFMidware;
 import org.b3log.symphony.processor.middleware.LoginCheckMidware;
 import org.b3log.symphony.processor.middleware.PermissionMidware;
 import org.b3log.symphony.processor.middleware.validate.UserRegister2ValidationMidware;
@@ -187,6 +187,12 @@ public class AdminProcessor {
      */
     @Inject
     private ArticleMgmtService articleMgmtService;
+
+    /**
+     * Long article column query service.
+     */
+    @Inject
+    private LongArticleColumnQueryService longArticleColumnQueryService;
 
     /**
      * Comment query service.
@@ -371,6 +377,7 @@ public class AdminProcessor {
         final AdminProcessor adminProcessor = beanManager.getReference(AdminProcessor.class);
         final PermissionMidware permissionMidware = beanManager.getReference(PermissionMidware.class);
         final LoginCheckMidware loginCheck = beanManager.getReference(LoginCheckMidware.class);
+        final CSRFMidware csrfMidware = beanManager.getReference(CSRFMidware.class);
         final Handler[] middlewares = new Handler[]{permissionMidware::check};
 
         Dispatcher.get("/cron/long-article/settle", adminProcessor::settleLongArticleReward, loginCheck::handle, permissionMidware::check);
@@ -447,9 +454,9 @@ public class AdminProcessor {
         Dispatcher.post("/admin/search/index", adminProcessor::rebuildArticleSearchIndex, middlewares);
         Dispatcher.post("/admin/search-index-article", adminProcessor::rebuildOneArticleSearchIndex, middlewares);
         Dispatcher.post("/admin/broadcast/warn", adminProcessor::warnBroadcast, middlewares);
-        Dispatcher.post("/admin/security/firewall", adminProcessor::toggleFirewall, middlewares);
-        Dispatcher.post("/admin/security/verification", adminProcessor::toggleVerificationShield, middlewares);
-        Dispatcher.post("/admin/security/verification-first", adminProcessor::toggleFirstVisitCaptcha, middlewares);
+        Dispatcher.post("/admin/security/firewall", adminProcessor::toggleFirewall, permissionMidware::check, csrfMidware::check);
+        Dispatcher.post("/admin/security/verification", adminProcessor::toggleVerificationShield, permissionMidware::check, csrfMidware::check);
+        Dispatcher.post("/admin/security/verification-first", adminProcessor::toggleFirstVisitCaptcha, permissionMidware::check, csrfMidware::check);
         Dispatcher.get("/admin/ip", adminProcessor::showIp, middlewares);
         Dispatcher.post("/admin/ip", adminProcessor::modifyIp, middlewares);
         Dispatcher.get("/admin/pic", adminProcessor::showPic, middlewares);
@@ -699,7 +706,7 @@ public class AdminProcessor {
             switch (type) {
                 case "unban":
                     for (String ip : ipList) {
-                        String result = Execs.exec(new String[]{"sh", "-c", "ipset del fishpi " + ip}, 1000 * 3);
+                        Firewall.unbanIp(ip);
                         AnonymousViewCheckMidware.whiteList.add(ip);
                         AnonymousViewCheckMidware.ipBlacklistCache.invalidate(ip);
                         LogsService.simpleLog(context, "解封IP", "操作员: " + operatorUserName + ", IP: " + ip);
@@ -707,7 +714,7 @@ public class AdminProcessor {
                     break;
                 case "ban":
                     for (String ip : ipList) {
-                        String result = Execs.exec(new String[]{"sh", "-c", "ipset add fishpi " + ip}, 1000 * 3);
+                        Firewall.banIp(ip);
                         LogsService.simpleLog(context, "封禁IP", "操作员: " + operatorUserName + ", IP: " + ip);
                     }
                     break;
@@ -2276,6 +2283,8 @@ public class AdminProcessor {
         final String articleId = context.pathVar("articleId");
         final JSONObject article = articleQueryService.getArticle(articleId);
         Escapes.escapeHTML(article);
+        fillLongArticleChapterMeta(article);
+        fillLongArticleColumnsForAdmin(article, dataModel);
         dataModel.put(Article.ARTICLE, article);
 
         dataModelService.fillHeaderAndFooter(context, dataModel);
@@ -2295,9 +2304,23 @@ public class AdminProcessor {
 
         JSONObject article = articleQueryService.getArticle(articleId);
 
+        final JSONObject longArticleColumnRequest = new JSONObject();
+        longArticleColumnRequest.put(LongArticleColumn.COLUMN_ID,
+                StringUtils.trimToEmpty(context.param(LongArticleColumn.COLUMN_ID)));
+        longArticleColumnRequest.put(LongArticleColumn.COLUMN_TITLE,
+                StringUtils.trimToEmpty(context.param(LongArticleColumn.COLUMN_TITLE)));
+        longArticleColumnRequest.put(LongArticleColumn.CHAPTER_NO,
+                StringUtils.trimToEmpty(context.param(LongArticleColumn.CHAPTER_NO)));
+
         final Iterator<String> parameterNames = request.getParameterNames().iterator();
         while (parameterNames.hasNext()) {
             final String name = parameterNames.next();
+            if (name.equals(LongArticleColumn.COLUMN_ID)
+                    || name.equals(LongArticleColumn.COLUMN_TITLE)
+                    || name.equals(LongArticleColumn.CHAPTER_NO)) {
+                continue;
+            }
+
             final String value = context.param(name);
             if (name.equals(Article.ARTICLE_REWARD_POINT)
                     || name.equals(Article.ARTICLE_QNA_OFFER_POINT)
@@ -2319,10 +2342,12 @@ public class AdminProcessor {
         final String articleTags = Tag.formatTags(article.optString(Article.ARTICLE_TAGS));
         article.put(Article.ARTICLE_TAGS, articleTags);
 
-        articleMgmtService.updateArticleByAdmin(articleId, article);
+        articleMgmtService.updateArticleByAdmin(articleId, article, longArticleColumnRequest);
         operationMgmtService.addOperation(Operation.newOperation(request, Operation.OPERATION_CODE_C_UPDATE_ARTICLE, articleId));
 
         article = articleQueryService.getArticle(articleId);
+        fillLongArticleChapterMeta(article);
+        fillLongArticleColumnsForAdmin(article, dataModel);
         String title = article.optString(Article.ARTICLE_TITLE);
         title = Escapes.escapeHTML(title);
         article.put(Article.ARTICLE_TITLE, title);
@@ -2331,6 +2356,39 @@ public class AdminProcessor {
         updateArticleSearchIndex(article);
 
         dataModelService.fillHeaderAndFooter(context, dataModel);
+    }
+
+    private void fillLongArticleChapterMeta(final JSONObject article) {
+        if (null == article || Article.ARTICLE_TYPE_C_LONG != article.optInt(Article.ARTICLE_TYPE)) {
+            return;
+        }
+
+        final JSONObject chapterMeta = longArticleColumnQueryService.getArticleChapterMeta(article.optString(Keys.OBJECT_ID));
+        if (null == chapterMeta) {
+            article.remove(LongArticleColumn.COLUMN_ID);
+            article.remove(LongArticleColumn.COLUMN_TITLE);
+            article.remove(LongArticleColumn.CHAPTER_NO);
+            return;
+        }
+
+        article.put(LongArticleColumn.COLUMN_ID, chapterMeta.optString(LongArticleColumn.COLUMN_ID));
+        article.put(LongArticleColumn.COLUMN_TITLE, chapterMeta.optString(LongArticleColumn.COLUMN_TITLE));
+        article.put(LongArticleColumn.CHAPTER_NO, chapterMeta.optInt(LongArticleColumn.CHAPTER_NO));
+    }
+
+    private void fillLongArticleColumnsForAdmin(final JSONObject article, final Map<String, Object> dataModel) {
+        if (null == article) {
+            dataModel.put("longArticleColumns", Collections.emptyList());
+            return;
+        }
+
+        final String authorId = article.optString(Article.ARTICLE_AUTHOR_ID);
+        if (StringUtils.isBlank(authorId)) {
+            dataModel.put("longArticleColumns", Collections.emptyList());
+            return;
+        }
+
+        dataModel.put("longArticleColumns", longArticleColumnQueryService.getUserColumns(authorId, 200));
     }
 
     /**
